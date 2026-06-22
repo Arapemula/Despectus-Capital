@@ -10,6 +10,23 @@ dotenv.config();
 
 const app = express();
 
+// Get pool.json file path, using /tmp directory in Vercel to bypass Read-Only File System (EROFS)
+const POOL_FILE_PATH = process.env.VERCEL
+  ? path.join('/tmp', 'pool.json')
+  : path.join(process.cwd(), 'api', 'pool.json');
+
+// Initialize /tmp/pool.json if it doesn't exist on Vercel
+if (process.env.VERCEL && !fs.existsSync(POOL_FILE_PATH)) {
+  try {
+    const templatePath = path.join(process.cwd(), 'api', 'pool.json');
+    if (fs.existsSync(templatePath)) {
+      fs.copyFileSync(templatePath, POOL_FILE_PATH);
+    }
+  } catch (err) {
+    console.error('Failed to initialize pool.json in /tmp:', err.message);
+  }
+}
+
 // Allowed origins for CORS (including port 3002 for our frontend)
 const rawFrontendUrl = process.env.FRONTEND_URL || '';
 const explicitOrigins = rawFrontendUrl
@@ -203,7 +220,7 @@ function authenticateAdmin(req, res, next) {
 // Route to get the entire pool state
 app.get('/api/pool', (req, res) => {
   try {
-    const filePath = path.join(process.cwd(), 'api', 'pool.json');
+    const filePath = POOL_FILE_PATH;
     if (fs.existsSync(filePath)) {
       const data = fs.readFileSync(filePath, 'utf8');
       return res.json({ success: true, pool: JSON.parse(data) });
@@ -228,7 +245,7 @@ app.post('/api/pool/investors', authenticateAdmin, (req, res) => {
     if (!Array.isArray(investors)) {
       return res.status(400).json({ success: false, error: 'Format data tidak valid.' });
     }
-    const filePath = path.join(process.cwd(), 'api', 'pool.json');
+    const filePath = POOL_FILE_PATH;
     let pool = {};
     if (fs.existsSync(filePath)) {
       pool = JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -248,7 +265,7 @@ app.post('/api/pool/start', authenticateAdmin, (req, res) => {
     if (startBalanceIdr === undefined || isNaN(startBalanceIdr)) {
       return res.status(400).json({ success: false, error: 'Saldo awal tidak valid.' });
     }
-    const filePath = path.join(process.cwd(), 'api', 'pool.json');
+    const filePath = POOL_FILE_PATH;
     let pool = {};
     if (fs.existsSync(filePath)) {
       pool = JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -283,7 +300,7 @@ app.post('/api/pool/reset', authenticateAdmin, (req, res) => {
     if (!Array.isArray(updatedInvestors)) {
       return res.status(400).json({ success: false, error: 'Data investor tidak valid.' });
     }
-    const filePath = path.join(process.cwd(), 'api', 'pool.json');
+    const filePath = POOL_FILE_PATH;
     let pool = {};
     if (fs.existsSync(filePath)) {
       pool = JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -319,7 +336,7 @@ app.post('/api/pool/history', (req, res) => {
     if (!date || balance === undefined || isNaN(balance)) {
       return res.status(400).json({ success: false, error: 'Data history tidak lengkap.' });
     }
-    const filePath = path.join(process.cwd(), 'api', 'pool.json');
+    const filePath = POOL_FILE_PATH;
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ success: false, error: 'Pool state tidak ditemukan.' });
     }
@@ -343,7 +360,7 @@ app.post('/api/pool/history', (req, res) => {
 // Route to reset pool config back to default parameters (requires auth)
 app.post('/api/admin/reset-investors', authenticateAdmin, (req, res) => {
   try {
-    const filePath = path.join(process.cwd(), 'api', 'pool.json');
+    const filePath = POOL_FILE_PATH;
     const defaultPool = {
       isStarted: false,
       startBalanceIdr: 0,
