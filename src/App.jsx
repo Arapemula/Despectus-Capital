@@ -216,8 +216,8 @@ export default function App() {
   }, []);
 
   // Fetch Exchange details
-  const fetchExchangeDetails = async () => {
-    setLoading(true);
+  const fetchExchangeDetails = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const body = isLockedByServer ? {} : { apiKey, apiSecret };
       const res = await fetch('/api/bybit/balance', {
@@ -228,25 +228,39 @@ export default function App() {
       const data = await res.json();
       if (data.success) {
         setApiBalanceUsd(data.totalUsdValue);
-        triggerToast('Sinkronisasi data API berhasil!');
+        if (!silent) triggerToast('Sinkronisasi data API berhasil!');
       } else {
-        triggerToast(data.error || 'Autentikasi API ditolak.', false);
+        if (!silent) triggerToast(data.error || 'Autentikasi API ditolak.', false);
       }
     } catch (err) {
       console.error('API fetch failed:', err);
-      triggerToast('Koneksi backend proxy gagal.', false);
+      if (!silent) triggerToast('Koneksi backend proxy gagal.', false);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
-  // Sync automatically if using Exchange API keys
+  // Sync automatically if using Exchange API keys on mount
   useEffect(() => {
     if (useExchangeApi && (isLockedByServer || (apiKey && apiSecret))) {
       fetchExchangeDetails();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [useExchangeApi, isLockedByServer]);
+
+  // Silent auto-refresh Bybit balance every 3 minutes (180000ms) to avoid API rate limits
+  useEffect(() => {
+    let intervalId = null;
+    if (useExchangeApi && (isLockedByServer || (apiKey && apiSecret))) {
+      intervalId = setInterval(() => {
+        fetchExchangeDetails(true);
+      }, 180000);
+    }
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useExchangeApi, isLockedByServer, apiKey, apiSecret]);
 
   // Current Live balance in IDR
   const currentBalanceIdr = useMemo(() => {
