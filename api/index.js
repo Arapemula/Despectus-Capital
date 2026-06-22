@@ -457,7 +457,7 @@ app.post('/api/bybit/balance', bybitLimiter, async (req, res) => {
 
         if (data.retCode === 0 && data.result?.list) {
           const accountData = data.result.list[0];
-          let equity = parseFloat(accountData.totalEquity || accountData.totalWalletBalance || '0');
+          let equity = parseFloat(accountData.totalWalletBalance || accountData.totalEquity || '0');
 
           const coins = (accountData.coin || []).map(c => ({
             coin: c.coin,
