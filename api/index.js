@@ -310,12 +310,15 @@ app.get('/api/pool', async (req, res) => {
 // Route to update investors list (requires auth)
 app.post('/api/pool/investors', authenticateAdmin, async (req, res) => {
   try {
-    const { investors } = req.body;
+    const { investors, startBalanceIdr } = req.body;
     if (!Array.isArray(investors)) {
       return res.status(400).json({ success: false, error: 'Format data tidak valid.' });
     }
     const pool = await getPoolData();
     pool.investors = investors;
+    if (startBalanceIdr !== undefined) {
+      pool.startBalanceIdr = parseFloat(startBalanceIdr);
+    }
     await savePoolData(pool);
     res.json({ success: true, pool });
   } catch (err) {

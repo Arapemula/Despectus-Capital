@@ -431,16 +431,20 @@ export default function App() {
   };
 
   // Sync update investors
-  const syncInvestorsToServer = async (updatedList) => {
+  const syncInvestorsToServer = async (updatedList, newStartBalance) => {
     try {
       const token = sessionStorage.getItem('admin_session_token') || adminToken;
+      const body = { investors: updatedList };
+      if (newStartBalance !== undefined) {
+        body.startBalanceIdr = newStartBalance;
+      }
       const res = await fetch('/api/pool/investors', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ investors: updatedList })
+        body: JSON.stringify(body)
       });
       const data = await res.json();
       if (data.success) {
@@ -598,8 +602,14 @@ export default function App() {
     setNewInvDeposit('');
     setNewInvAdminFeePct('20');
     setNewInvJoinDate(new Date().toISOString().substring(0, 10));
+    
+    let newStart = startBalanceIdr;
+    if (isStarted) {
+      newStart = startBalanceIdr + newInv.deposit;
+      setStartBalanceIdr(newStart);
+    }
     triggerToast('Investor baru ditambahkan!');
-    await syncInvestorsToServer(updated);
+    await syncInvestorsToServer(updated, newStart);
   };
 
   const handleDeleteInvestor = async (id) => {
@@ -607,10 +617,17 @@ export default function App() {
       triggerToast('Minimal harus menyisakan 1 investor!', false);
       return;
     }
+    const targetInv = investors.find(i => i.id === id);
     const updated = investors.filter(i => i.id !== id);
     setInvestors(updated);
+    
+    let newStart = startBalanceIdr;
+    if (isStarted && targetInv) {
+      newStart = Math.max(0, startBalanceIdr - (targetInv.deposit || 0));
+      setStartBalanceIdr(newStart);
+    }
     triggerToast('Investor berhasil dihapus.');
-    await syncInvestorsToServer(updated);
+    await syncInvestorsToServer(updated, newStart);
   };
 
   return (
@@ -806,7 +823,7 @@ export default function App() {
                   <h2 style={{ fontSize: '0.85rem' }}>Investor Capital Shares</h2>
                   <span className="label-muted" style={{ fontSize: '0.65rem' }}>Pembagian Hasil Investor (Net)</span>
                 </div>
-                {isAdmin && !isStarted && (
+                {isAdmin && (
                   <button
                     className="btn-titan"
                     onClick={() => setIsManageInvestorsOpen(true)}
