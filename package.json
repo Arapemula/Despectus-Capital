@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
+    "@supabase/supabase-js": "^2.108.2",
     "axios": "^1.18.0",
     "canvas-confetti": "^1.9.4",
     "cors": "^2.8.6",

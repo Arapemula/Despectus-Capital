@@ -5,10 +5,26 @@ import crypto from 'crypto';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
+import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
 const app = express();
+
+// Initialize Supabase Client (Service Role key bypasses RLS for backend write access)
+const supabaseUrl = process.env.SUPABASE_URL || '';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabase = (supabaseUrl && supabaseServiceKey)
+  ? createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false }
+    })
+  : null;
+
+if (supabase) {
+  console.log('Supabase client successfully initialized.');
+} else {
+  console.warn('Supabase credentials missing, falling back to local file system.');
+}
 
 // Get pool.json file path, using /tmp directory in Vercel to bypass Read-Only File System (EROFS)
 const POOL_FILE_PATH = process.env.VERCEL
@@ -25,6 +41,70 @@ if (process.env.VERCEL && !fs.existsSync(POOL_FILE_PATH)) {
   } catch (err) {
     console.error('Failed to initialize pool.json in /tmp:', err.message);
   }
+}
+
+// Helper to get pool data from Supabase with fallback to local file
+async function getPoolData() {
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('pool_state')
+        .select('*')
+        .eq('id', 1)
+        .single();
+      
+      if (error) throw error;
+      if (data) {
+        return {
+          isStarted: data.is_started,
+          startBalanceIdr: parseFloat(data.start_balance_idr || 0),
+          cycleStartTime: data.cycle_start_time ? parseInt(data.cycle_start_time) : null,
+          investors: data.investors || [],
+          history: data.history || []
+        };
+      }
+    } catch (err) {
+      console.error('Supabase getPoolData failed, falling back to local file:', err.message);
+    }
+  }
+
+  if (fs.existsSync(POOL_FILE_PATH)) {
+    const data = fs.readFileSync(POOL_FILE_PATH, 'utf8');
+    return JSON.parse(data);
+  }
+  return {
+    isStarted: false,
+    startBalanceIdr: 0,
+    cycleStartTime: null,
+    investors: [],
+    history: []
+  };
+}
+
+// Helper to save pool data to Supabase with fallback to local file
+async function savePoolData(pool) {
+  if (supabase) {
+    try {
+      const { error } = await supabase
+        .from('pool_state')
+        .update({
+          is_started: pool.isStarted,
+          start_balance_idr: pool.startBalanceIdr,
+          cycle_start_time: pool.cycleStartTime,
+          investors: pool.investors,
+          history: pool.history
+        })
+        .eq('id', 1);
+      
+      if (error) throw error;
+      return true;
+    } catch (err) {
+      console.error('Supabase savePoolData failed, falling back to local file:', err.message);
+    }
+  }
+
+  fs.writeFileSync(POOL_FILE_PATH, JSON.stringify(pool, null, 2), 'utf8');
+  return true;
 }
 
 // Allowed origins for CORS (including port 3002 for our frontend)
@@ -218,40 +298,25 @@ function authenticateAdmin(req, res, next) {
 }
 
 // Route to get the entire pool state
-app.get('/api/pool', (req, res) => {
+app.get('/api/pool', async (req, res) => {
   try {
-    const filePath = POOL_FILE_PATH;
-    if (fs.existsSync(filePath)) {
-      const data = fs.readFileSync(filePath, 'utf8');
-      return res.json({ success: true, pool: JSON.parse(data) });
-    }
-    // Fallback default pool state
-    const defaultPool = {
-      isStarted: false,
-      startBalanceIdr: 0,
-      investors: [],
-      history: []
-    };
-    res.json({ success: true, pool: defaultPool });
+    const pool = await getPoolData();
+    res.json({ success: true, pool });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
 // Route to update investors list (requires auth)
-app.post('/api/pool/investors', authenticateAdmin, (req, res) => {
+app.post('/api/pool/investors', authenticateAdmin, async (req, res) => {
   try {
     const { investors } = req.body;
     if (!Array.isArray(investors)) {
       return res.status(400).json({ success: false, error: 'Format data tidak valid.' });
     }
-    const filePath = POOL_FILE_PATH;
-    let pool = {};
-    if (fs.existsSync(filePath)) {
-      pool = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    }
+    const pool = await getPoolData();
     pool.investors = investors;
-    fs.writeFileSync(filePath, JSON.stringify(pool, null, 2), 'utf8');
+    await savePoolData(pool);
     res.json({ success: true, pool });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -259,18 +324,13 @@ app.post('/api/pool/investors', authenticateAdmin, (req, res) => {
 });
 
 // Route to start the cycle (requires auth)
-app.post('/api/pool/start', authenticateAdmin, (req, res) => {
+app.post('/api/pool/start', authenticateAdmin, async (req, res) => {
   try {
     const { startBalanceIdr } = req.body;
     if (startBalanceIdr === undefined || isNaN(startBalanceIdr)) {
       return res.status(400).json({ success: false, error: 'Saldo awal tidak valid.' });
     }
-    const filePath = POOL_FILE_PATH;
-    let pool = {};
-    if (fs.existsSync(filePath)) {
-      pool = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    }
-    
+    const pool = await getPoolData();
     pool.isStarted = true;
     pool.startBalanceIdr = parseFloat(startBalanceIdr);
     pool.cycleStartTime = Date.now();
@@ -286,7 +346,7 @@ app.post('/api/pool/start', authenticateAdmin, (req, res) => {
       pool.history.push({ date: todayLabel, balance: pool.startBalanceIdr });
     }
     
-    fs.writeFileSync(filePath, JSON.stringify(pool, null, 2), 'utf8');
+    await savePoolData(pool);
     res.json({ success: true, pool });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -294,18 +354,13 @@ app.post('/api/pool/start', authenticateAdmin, (req, res) => {
 });
 
 // Route to reset the cycle (requires auth)
-app.post('/api/pool/reset', authenticateAdmin, (req, res) => {
+app.post('/api/pool/reset', authenticateAdmin, async (req, res) => {
   try {
     const { updatedInvestors, currentBalanceIdr } = req.body;
     if (!Array.isArray(updatedInvestors)) {
       return res.status(400).json({ success: false, error: 'Data investor tidak valid.' });
     }
-    const filePath = POOL_FILE_PATH;
-    let pool = {};
-    if (fs.existsSync(filePath)) {
-      pool = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    }
-    
+    const pool = await getPoolData();
     pool.isStarted = false;
     pool.investors = updatedInvestors;
     pool.cycleStartTime = null;
@@ -322,7 +377,7 @@ app.post('/api/pool/reset', authenticateAdmin, (req, res) => {
       }
     }
     
-    fs.writeFileSync(filePath, JSON.stringify(pool, null, 2), 'utf8');
+    await savePoolData(pool);
     res.json({ success: true, pool });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -330,17 +385,13 @@ app.post('/api/pool/reset', authenticateAdmin, (req, res) => {
 });
 
 // Route to save historical balance snapshot
-app.post('/api/pool/history', (req, res) => {
+app.post('/api/pool/history', async (req, res) => {
   try {
     const { date, balance } = req.body;
     if (!date || balance === undefined || isNaN(balance)) {
       return res.status(400).json({ success: false, error: 'Data history tidak lengkap.' });
     }
-    const filePath = POOL_FILE_PATH;
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ success: false, error: 'Pool state tidak ditemukan.' });
-    }
-    const pool = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const pool = await getPoolData();
     if (!pool.history) pool.history = [];
     
     const existingIdx = pool.history.findIndex(h => h.date === date);
@@ -350,7 +401,7 @@ app.post('/api/pool/history', (req, res) => {
       pool.history.push({ date, balance: parseFloat(balance) });
     }
     
-    fs.writeFileSync(filePath, JSON.stringify(pool, null, 2), 'utf8');
+    await savePoolData(pool);
     res.json({ success: true, pool });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -358,9 +409,8 @@ app.post('/api/pool/history', (req, res) => {
 });
 
 // Route to reset pool config back to default parameters (requires auth)
-app.post('/api/admin/reset-investors', authenticateAdmin, (req, res) => {
+app.post('/api/admin/reset-investors', authenticateAdmin, async (req, res) => {
   try {
-    const filePath = POOL_FILE_PATH;
     const defaultPool = {
       isStarted: false,
       startBalanceIdr: 0,
@@ -368,7 +418,7 @@ app.post('/api/admin/reset-investors', authenticateAdmin, (req, res) => {
       investors: [],
       history: []
     };
-    fs.writeFileSync(filePath, JSON.stringify(defaultPool, null, 2), 'utf8');
+    await savePoolData(defaultPool);
     res.json({ success: true, message: 'Pool state direset ke default.', pool: defaultPool });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
