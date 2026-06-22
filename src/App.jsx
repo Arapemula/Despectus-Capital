@@ -672,7 +672,7 @@ export default function App() {
               Investment <span style={{ color: 'var(--color-lime)', fontWeight: '300' }}>Monitor</span>
             </span>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
             <span style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -693,17 +693,19 @@ export default function App() {
               }} />
               {isDbConnected ? 'Supabase' : 'Local Fallback'}
             </span>
-            <span style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-              RATE: Rp {Math.round(exchangeRate).toLocaleString('id-ID')}/USDT
-            </span>
-            <button
-              onClick={() => fetchRates(false)}
-              disabled={ratesLoading}
-              title="Refresh Rate"
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center' }}
-            >
-              <RefreshCw size={13} className={ratesLoading ? 'spin-anim' : ''} />
-            </button>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              <span style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                RATE: Rp {Math.round(exchangeRate).toLocaleString('id-ID')}/USDT
+              </span>
+              <button
+                onClick={() => fetchRates(false)}
+                disabled={ratesLoading}
+                title="Refresh Rate"
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px', display: 'inline-flex', alignItems: 'center' }}
+              >
+                <RefreshCw size={13} className={ratesLoading ? 'spin-anim' : ''} />
+              </button>
+            </div>
             {isAdmin ? (
               <button
                 className="btn-titan"
@@ -856,7 +858,8 @@ export default function App() {
                 )}
               </div>
 
-              <div style={{ overflowX: 'auto' }}>
+              {/* Desktop View */}
+              <div className="desktop-only" style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.74rem' }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }}>
@@ -903,6 +906,62 @@ export default function App() {
                     })}
                   </tbody>
                 </table>
+              </div>
+
+              {/* Mobile View */}
+              <div className="mobile-only">
+                <div className="mobile-investor-cards">
+                  {investorCalculations.map(inv => {
+                    const isProfitShare = inv.netProfitShare >= 0;
+                    return (
+                      <div key={inv.id} className="mobile-investor-card">
+                        <div className="card-header">
+                          <div className="investor-info">
+                            <span className="investor-name">{inv.name}</span>
+                            <span className="investor-date">Gabung: {inv.joinDate || '2026-06-01'}</span>
+                          </div>
+                          <span className="investor-badge-share">
+                            {inv.sharePct.toFixed(1)}% Share
+                          </span>
+                        </div>
+                        
+                        <div className="card-body">
+                          <div className="info-row">
+                            <span className="info-label">Porsi Modal</span>
+                            <span className="info-val">Rp {Math.round(inv.deposit).toLocaleString('id-ID')}</span>
+                          </div>
+                          
+                          <div className="info-row">
+                            <span className="info-label">Bagi Profit (Net)</span>
+                            <span className={`info-val ${isProfitShare ? 'text-profit' : 'text-loss'}`}>
+                              {isProfitShare ? '+' : ''}Rp {Math.round(inv.netProfitShare).toLocaleString('id-ID')}
+                            </span>
+                          </div>
+                          
+                          <div className="fee-details-row">
+                            <div className="fee-item">
+                              <span>Profit Kotor</span>
+                              <span className="fee-val">{isProfitShare ? '+' : ''}Rp {Math.round(inv.grossProfitShare).toLocaleString('id-ID')}</span>
+                            </div>
+                            <div className="fee-item">
+                              <span>Fee Admin ({inv.adminFeePct || 20}%)</span>
+                              <span className="fee-val" style={{ color: 'var(--color-crimson)' }}>
+                                -Rp {Math.round(inv.adminFee).toLocaleString('id-ID')}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="card-footer">
+                          <span className="footer-label">Nilai Bersih</span>
+                          <span className="footer-val">
+                            Rp {Math.round(inv.currentValue).toLocaleString('id-ID')}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </section>
 
@@ -982,14 +1041,13 @@ export default function App() {
               {/* Add Investor Form */}
               <form onSubmit={handleAddInvestor} style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '1rem' }}>
                 <span className="label-muted" style={{ fontSize: '0.55rem' }}>Tambah Investor Baru</span>
-                <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                <div className="form-grid-add-investor">
                   <input
                     type="text"
                     placeholder="Nama"
                     value={newInvName}
                     onChange={(e) => setNewInvName(e.target.value)}
                     className="input-titan"
-                    style={{ flex: '1 1 120px' }}
                     required
                   />
                   <input
@@ -998,7 +1056,6 @@ export default function App() {
                     value={newInvDeposit}
                     onChange={(e) => setNewInvDeposit(e.target.value)}
                     className="input-titan"
-                    style={{ flex: '1 1 110px' }}
                     required
                   />
                   <input
@@ -1007,7 +1064,6 @@ export default function App() {
                     value={newInvAdminFeePct}
                     onChange={(e) => setNewInvAdminFeePct(e.target.value)}
                     className="input-titan"
-                    style={{ flex: '1 1 70px' }}
                     required
                   />
                   <input
@@ -1015,7 +1071,6 @@ export default function App() {
                     value={newInvJoinDate}
                     onChange={(e) => setNewInvJoinDate(e.target.value)}
                     className="input-titan"
-                    style={{ flex: '1 1 120px' }}
                     required
                   />
                 </div>
