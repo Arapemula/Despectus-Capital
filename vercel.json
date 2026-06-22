@@ -1,0 +1,7 @@
+{
+  "regions": ["sin1"],
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index.js" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
