@@ -49,6 +49,30 @@ export default function App() {
   // Modals
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isManageInvestorsOpen, setIsManageInvestorsOpen] = useState(false);
+
+  // Custom Confirmation Dialog State
+  const [confirmConfig, setConfirmConfig] = useState({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: null
+  });
+
+  const triggerConfirm = (title, message, onConfirm) => {
+    setConfirmConfig({
+      isOpen: true,
+      title,
+      message,
+      onConfirm: () => {
+        onConfirm();
+        closeConfirm();
+      }
+    });
+  };
+
+  const closeConfirm = () => {
+    setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+  };
   
   // Forms
   const [newInvName, setNewInvName] = useState('');
@@ -417,80 +441,90 @@ export default function App() {
   };
 
   // Start Cycle Action
-  const handleStartCycle = async () => {
+  const handleStartCycle = () => {
     if (isStarted) return;
     if (startingCapitalIdr <= 0) {
       triggerToast('Total modal awal investor harus lebih besar dari Rp 0!', false);
       return;
     }
-    if (!window.confirm(`Mulai siklus baru dengan Modal Awal Rp ${startingCapitalIdr.toLocaleString('id-ID')}?`)) return;
-
-    try {
-      const token = sessionStorage.getItem('admin_session_token') || adminToken;
-      const res = await fetch('/api/pool/start', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ startBalanceIdr: currentBalanceIdr })
-      });
-      const data = await res.json();
-      if (data.success) {
-        await fetchPoolState();
-        triggerToast('Siklus investasi resmi dimulai!');
-        confetti({
-          particleCount: 150,
-          spread: 80,
-          colors: ['#d4ff3a', '#b89bfb', '#30d158']
-        });
-      } else {
-        triggerToast(data.error || 'Gagal memulai siklus.', false);
+    
+    triggerConfirm(
+      'Mulai Siklus Baru',
+      `Apakah Anda yakin ingin memulai siklus baru dengan Modal Awal Rp ${startingCapitalIdr.toLocaleString('id-ID')}?`,
+      async () => {
+        try {
+          const token = sessionStorage.getItem('admin_session_token') || adminToken;
+          const res = await fetch('/api/pool/start', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ startBalanceIdr: currentBalanceIdr })
+          });
+          const data = await res.json();
+          if (data.success) {
+            await fetchPoolState();
+            triggerToast('Siklus investasi resmi dimulai!');
+            confetti({
+              particleCount: 150,
+              spread: 80,
+              colors: ['#d4ff3a', '#b89bfb', '#30d158']
+            });
+          } else {
+            triggerToast(data.error || 'Gagal memulai siklus.', false);
+          }
+        } catch (err) {
+          console.error(err);
+          triggerToast('Gagal terhubung ke server.', false);
+        }
       }
-    } catch (err) {
-      console.error(err);
-      triggerToast('Gagal terhubung ke server.', false);
-    }
+    );
   };
 
   // Reset Cycle Action (compounds net value and stops the cycle)
-  const handleResetCycle = async () => {
+  const handleResetCycle = () => {
     if (!isStarted) return;
-    if (!window.confirm('Reset siklus saat ini? Tindakan ini akan membagikan profit bersih ke modal investor (compounding) dan mengunci profit berjalan.')) return;
+    
+    triggerConfirm(
+      'Reset & Gulung Siklus',
+      'Apakah Anda yakin ingin mereset siklus saat ini? Tindakan ini akan membagikan profit bersih ke modal investor (compounding) dan mengunci profit berjalan.',
+      async () => {
+        // Compound Nilai Bersih to be the next cycle's deposit
+        const compoundedInvestors = investorCalculations.map(inv => ({
+          id: inv.id,
+          name: inv.name,
+          deposit: Math.round(inv.currentValue),
+          joinDate: inv.joinDate,
+          adminFeePct: inv.adminFeePct
+        }));
 
-    // Compound Nilai Bersih to be the next cycle's deposit
-    const compoundedInvestors = investorCalculations.map(inv => ({
-      id: inv.id,
-      name: inv.name,
-      deposit: Math.round(inv.currentValue),
-      joinDate: inv.joinDate,
-      adminFeePct: inv.adminFeePct
-    }));
-
-    try {
-      const token = sessionStorage.getItem('admin_session_token') || adminToken;
-      const res = await fetch('/api/pool/reset', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          updatedInvestors: compoundedInvestors,
-          currentBalanceIdr
-        })
-      });
-      const data = await res.json();
-      if (data.success) {
-        await fetchPoolState();
-        triggerToast('Siklus investasi dihentikan & profit berhasil digulung!');
-      } else {
-        triggerToast(data.error || 'Gagal mereset siklus.', false);
+        try {
+          const token = sessionStorage.getItem('admin_session_token') || adminToken;
+          const res = await fetch('/api/pool/reset', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+              updatedInvestors: compoundedInvestors,
+              currentBalanceIdr
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            await fetchPoolState();
+            triggerToast('Siklus investasi dihentikan & profit berhasil digulung!');
+          } else {
+            triggerToast(data.error || 'Gagal mereset siklus.', false);
+          }
+        } catch (err) {
+          console.error(err);
+          triggerToast('Gagal terhubung ke server.', false);
+        }
       }
-    } catch (err) {
-      console.error(err);
-      triggerToast('Gagal terhubung ke server.', false);
-    }
+    );
   };
 
   // Toggle Data Source
@@ -501,26 +535,31 @@ export default function App() {
   };
 
   // Reset console to defaults
-  const handleResetAllData = async () => {
-    if (!window.confirm('Apakah Anda yakin ingin mereset konsol ke setelan awal pabrik?')) return;
-    try {
-      const token = sessionStorage.getItem('admin_session_token') || adminToken;
-      const res = await fetch('/api/admin/reset-investors', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await res.json();
-      if (data.success) {
-        await fetchPoolState();
-        setIsManageInvestorsOpen(false);
-        triggerToast('Konsol berhasil disetel ulang ke default.');
-      } else {
-        triggerToast(data.error || 'Gagal melakukan reset.', false);
+  const handleResetAllData = () => {
+    triggerConfirm(
+      'Reset Setelan Pabrik',
+      'Apakah Anda yakin ingin mereset konsol ke setelan awal pabrik? Semua data investor dan riwayat saldo saat ini akan dihapus secara permanen.',
+      async () => {
+        try {
+          const token = sessionStorage.getItem('admin_session_token') || adminToken;
+          const res = await fetch('/api/admin/reset-investors', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          const data = await res.json();
+          if (data.success) {
+            await fetchPoolState();
+            setIsManageInvestorsOpen(false);
+            triggerToast('Konsol berhasil disetel ulang ke default.');
+          } else {
+            triggerToast(data.error || 'Gagal melakukan reset.', false);
+          }
+        } catch (err) {
+          console.error(err);
+          triggerToast('Koneksi server gagal.', false);
+        }
       }
-    } catch (err) {
-      console.error(err);
-      triggerToast('Koneksi server gagal.', false);
-    }
+    );
   };
 
   // Add/Remove Investors
@@ -967,6 +1006,29 @@ export default function App() {
                   <RefreshCw size={12} /> Reset Console (Default)
                 </button>
                 <button type="button" className="btn-titan" onClick={() => setIsManageInvestorsOpen(false)}>Done</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Custom Confirmation Dialog ────────────────────────────────────────── */}
+        {confirmConfig.isOpen && (
+          <div className="dialog-overlay" style={{ zIndex: 1100 }}>
+            <div className="dialog-content" style={{ maxWidth: '380px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h2 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--color-lime)' }}>
+                  {confirmConfig.title}
+                </h2>
+                <button type="button" className="btn-titan" style={{ padding: '0.3rem 0.6rem' }} onClick={closeConfirm}>✕</button>
+              </div>
+
+              <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5, marginTop: '0.2rem' }}>
+                {confirmConfig.message}
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <button type="button" className="btn-gold" style={{ flex: 1 }} onClick={confirmConfig.onConfirm}>Confirm</button>
+                <button type="button" className="btn-titan" style={{ flex: 1 }} onClick={closeConfirm}>Cancel</button>
               </div>
             </div>
           </div>
