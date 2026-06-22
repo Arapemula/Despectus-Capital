@@ -41,6 +41,7 @@ export default function App() {
   const [investors, setInvestors] = useState([]);
   const [chartHistory, setChartHistory] = useState([]);
   const [cycleStartTime, setCycleStartTime] = useState(null);
+  const [isDbConnected, setIsDbConnected] = useState(false);
 
   // Authentication state
   const [isAdmin, setIsAdmin] = useState(false);
@@ -177,6 +178,7 @@ export default function App() {
         setInvestors(data.pool.investors || []);
         setChartHistory(data.pool.history || []);
         setCycleStartTime(data.pool.cycleStartTime || null);
+        setIsDbConnected(!!data.isDbConnected);
       }
     } catch (err) {
       console.error('Failed to fetch pool state:', err);
@@ -671,6 +673,26 @@ export default function App() {
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+              fontSize: '0.62rem',
+              background: isDbConnected ? 'rgba(48, 209, 88, 0.08)' : 'rgba(255, 159, 10, 0.08)',
+              color: isDbConnected ? '#30d158' : '#ff9f0a',
+              border: `1px solid ${isDbConnected ? 'rgba(48, 209, 88, 0.15)' : 'rgba(255, 159, 10, 0.15)'}`,
+              padding: '2px 8px',
+              borderRadius: '12px',
+              fontWeight: 600
+            }} title={isDbConnected ? "Terhubung ke Supabase Cloud" : "Fallback ke Database Lokal /tmp (Sementara)"}>
+              <span style={{
+                width: '4px',
+                height: '4px',
+                borderRadius: '50%',
+                background: isDbConnected ? '#30d158' : '#ff9f0a'
+              }} />
+              {isDbConnected ? 'Supabase' : 'Local Fallback'}
+            </span>
             <span style={{ fontFamily: 'var(--mono)', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
               RATE: Rp {Math.round(exchangeRate).toLocaleString('id-ID')}/USDT
             </span>

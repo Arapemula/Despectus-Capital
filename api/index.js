@@ -301,7 +301,7 @@ function authenticateAdmin(req, res, next) {
 app.get('/api/pool', async (req, res) => {
   try {
     const pool = await getPoolData();
-    res.json({ success: true, pool });
+    res.json({ success: true, pool, isDbConnected: !!supabase });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
