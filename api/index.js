@@ -30,7 +30,7 @@ app.use(cors({
     if (origin.endsWith('.vercel.app')) {
       try {
         const hostname = new URL(origin).hostname;
-        if (hostname.startsWith('invest-monitor')) return callback(null, true);
+        if (hostname.includes('invest-monitor') || hostname.includes('despectus-capital')) return callback(null, true);
       } catch (err) {
         // URL parsing error, ignore
       }
