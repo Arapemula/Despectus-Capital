@@ -26,3 +26,7 @@ dist-ssr
 .env
 .env.production
 .env.local
+
+# Local database fallbacks
+api/pool.json
+api/investors.json

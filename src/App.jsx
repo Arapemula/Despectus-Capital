@@ -50,6 +50,7 @@ export default function App() {
   // Modals
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isManageInvestorsOpen, setIsManageInvestorsOpen] = useState(false);
+  const [editingInvestorId, setEditingInvestorId] = useState(null);
 
   // Custom Confirmation Dialog State
   const [confirmConfig, setConfirmConfig] = useState({
@@ -81,6 +82,28 @@ export default function App() {
   const [newInvJoinDate, setNewInvJoinDate] = useState(() => new Date().toISOString().substring(0, 10));
   const [newInvAdminFeePct, setNewInvAdminFeePct] = useState('20');
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
+  const [autoAdjustMidCycle, setAutoAdjustMidCycle] = useState(true);
+
+  // Preview of deposit adjustment when entering mid-cycle
+  const adjustedDepositPreview = useMemo(() => {
+    const depositVal = parseFloat(newInvDeposit);
+    if (!depositVal || isNaN(depositVal) || depositVal <= 0) return 0;
+    if (!isStarted || startingCapitalIdr <= 0 || currentBalanceIdr <= 0 || !autoAdjustMidCycle) {
+      return depositVal;
+    }
+    
+    if (editingInvestorId) {
+      const oldInv = investors.find(i => i.id === editingInvestorId);
+      if (oldInv) {
+        const diff = depositVal - oldInv.deposit;
+        if (diff <= 0) return depositVal; // No adjustment for reduction/no change
+        const adjustedDiff = Math.round(diff * (startingCapitalIdr / currentBalanceIdr));
+        return oldInv.deposit + adjustedDiff;
+      }
+    }
+    
+    return Math.round(depositVal * (startingCapitalIdr / currentBalanceIdr));
+  }, [newInvDeposit, isStarted, startingCapitalIdr, currentBalanceIdr, autoAdjustMidCycle, editingInvestorId, investors]);
   
   // Manual Pool Balance (If not using API Sync)
   const [manualPoolBalanceIdr, setManualPoolBalanceIdr] = useState(() => 
@@ -582,36 +605,105 @@ export default function App() {
     );
   };
 
-  // Add/Remove Investors
-  const handleAddInvestor = async (e) => {
+  // Add/Edit/Remove Investors
+  const handleStartEditInvestor = (inv) => {
+    setEditingInvestorId(inv.id);
+    setNewInvName(inv.name);
+    setNewInvDeposit(inv.deposit.toString());
+    setNewInvAdminFeePct((inv.adminFeePct !== undefined ? inv.adminFeePct : 20).toString());
+    setNewInvJoinDate(inv.joinDate || new Date().toISOString().substring(0, 10));
+  };
+
+  const handleCancelEdit = () => {
+    setEditingInvestorId(null);
+    setNewInvName('');
+    setNewInvDeposit('');
+    setNewInvAdminFeePct('20');
+    setNewInvJoinDate(new Date().toISOString().substring(0, 10));
+  };
+
+  const handleSaveInvestor = async (e) => {
     e.preventDefault();
     if (!newInvName.trim() || !newInvDeposit || isNaN(newInvDeposit) || parseFloat(newInvDeposit) <= 0 || !newInvJoinDate || isNaN(newInvAdminFeePct)) {
       triggerToast('Data form investor tidak valid!', false);
       return;
     }
 
-    const newInv = {
-      id: Math.random().toString(),
-      name: newInvName.trim(),
-      deposit: parseFloat(newInvDeposit),
-      joinDate: newInvJoinDate,
-      adminFeePct: parseFloat(newInvAdminFeePct)
-    };
+    if (editingInvestorId) {
+      // Editing existing investor
+      const oldInv = investors.find(i => i.id === editingInvestorId);
+      if (!oldInv) return;
 
-    const updated = [...investors, newInv];
-    setInvestors(updated);
-    setNewInvName('');
-    setNewInvDeposit('');
-    setNewInvAdminFeePct('20');
-    setNewInvJoinDate(new Date().toISOString().substring(0, 10));
-    
-    let newStart = startBalanceIdr;
-    if (isStarted) {
-      newStart = startBalanceIdr + newInv.deposit;
-      setStartBalanceIdr(newStart);
+      const rawDepositInput = parseFloat(newInvDeposit);
+      const diff = rawDepositInput - oldInv.deposit;
+      let adjustedDiff = diff;
+      
+      // Only adjust if deposit is increased (additional capital) mid-cycle
+      if (autoAdjustMidCycle && isStarted && diff > 0 && startingCapitalIdr > 0 && currentBalanceIdr > 0) {
+        adjustedDiff = Math.round(diff * (startingCapitalIdr / currentBalanceIdr));
+      }
+
+      const finalDeposit = oldInv.deposit + adjustedDiff;
+
+      const updated = investors.map(inv => {
+        if (inv.id === editingInvestorId) {
+          return {
+            ...inv,
+            name: newInvName.trim(),
+            deposit: finalDeposit,
+            joinDate: newInvJoinDate,
+            adminFeePct: parseFloat(newInvAdminFeePct)
+          };
+        }
+        return inv;
+      });
+
+      setInvestors(updated);
+      setEditingInvestorId(null);
+      setNewInvName('');
+      setNewInvDeposit('');
+      setNewInvAdminFeePct('20');
+      setNewInvJoinDate(new Date().toISOString().substring(0, 10));
+
+      let newStart = startBalanceIdr;
+      if (isStarted) {
+        newStart = startBalanceIdr + adjustedDiff;
+        setStartBalanceIdr(newStart);
+      }
+      triggerToast('Perubahan data investor berhasil disimpan!');
+      await syncInvestorsToServer(updated, newStart);
+    } else {
+      // Adding new investor
+      const rawDepositInput = parseFloat(newInvDeposit);
+      let finalDeposit = rawDepositInput;
+      
+      if (autoAdjustMidCycle && isStarted && startingCapitalIdr > 0 && currentBalanceIdr > 0) {
+        finalDeposit = Math.round(rawDepositInput * (startingCapitalIdr / currentBalanceIdr));
+      }
+
+      const newInv = {
+        id: Math.random().toString(),
+        name: newInvName.trim(),
+        deposit: finalDeposit,
+        joinDate: newInvJoinDate,
+        adminFeePct: parseFloat(newInvAdminFeePct)
+      };
+
+      const updated = [...investors, newInv];
+      setInvestors(updated);
+      setNewInvName('');
+      setNewInvDeposit('');
+      setNewInvAdminFeePct('20');
+      setNewInvJoinDate(new Date().toISOString().substring(0, 10));
+      
+      let newStart = startBalanceIdr;
+      if (isStarted) {
+        newStart = startBalanceIdr + finalDeposit;
+        setStartBalanceIdr(newStart);
+      }
+      triggerToast('Investor baru ditambahkan!');
+      await syncInvestorsToServer(updated, newStart);
     }
-    triggerToast('Investor baru ditambahkan!');
-    await syncInvestorsToServer(updated, newStart);
   };
 
   const handleDeleteInvestor = async (id) => {
@@ -883,7 +975,12 @@ export default function App() {
                           <td style={{ padding: '0.6rem 0.25rem', textAlign: 'right' }}>
                             <div className="td-wrapper">
                               <div style={{ fontWeight: 700 }}>{inv.sharePct.toFixed(1)}%</div>
-                              <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>Rp {Math.round(inv.deposit).toLocaleString('id-ID')}</div>
+                              <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>
+                                Rp {Math.round(inv.deposit).toLocaleString('id-ID')}
+                              </div>
+                              <div style={{ fontSize: '0.58rem', color: 'var(--text-secondary)', fontFamily: 'var(--mono)' }}>
+                                {(inv.deposit / exchangeRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                              </div>
                             </div>
                           </td>
                           <td style={{ padding: '0.6rem 0.25rem', textAlign: 'right' }}>
@@ -891,14 +988,20 @@ export default function App() {
                               <div style={{ fontWeight: 700, color: isProfitShare ? 'var(--color-green-profit)' : 'var(--color-crimson)' }}>
                                 {isProfitShare ? '+' : ''}Rp {Math.round(inv.netProfitShare).toLocaleString('id-ID')}
                               </div>
-                              <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)' }}>
-                                Kotor: {isProfitShare ? '+' : ''}Rp {Math.round(inv.grossProfitShare).toLocaleString('id-ID')} | Fee: {inv.adminFeePct || 20}% (-Rp {Math.round(inv.adminFee).toLocaleString('id-ID')})
+                              <div style={{ fontSize: '0.58rem', color: isProfitShare ? 'var(--color-green-profit)' : 'var(--color-crimson)', fontFamily: 'var(--mono)', opacity: 0.85 }}>
+                                {isProfitShare ? '+' : ''}${(inv.netProfitShare / exchangeRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                              </div>
+                              <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                Kotor: {isProfitShare ? '+' : ''}Rp {Math.round(inv.grossProfitShare).toLocaleString('id-ID')} | Fee: {inv.adminFeePct || 20}%
                               </div>
                             </div>
                           </td>
                           <td style={{ padding: '0.6rem 0.25rem', textAlign: 'right', fontWeight: 600 }}>
                             <div className="td-wrapper">
-                              Rp {Math.round(inv.currentValue).toLocaleString('id-ID')}
+                              <div>Rp {Math.round(inv.currentValue).toLocaleString('id-ID')}</div>
+                              <div style={{ fontSize: '0.62rem', color: 'var(--color-lime)', fontFamily: 'var(--mono)' }}>
+                                {(inv.currentValue / exchangeRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                              </div>
                             </div>
                           </td>
                         </tr>
@@ -928,13 +1031,21 @@ export default function App() {
                         <div className="card-body">
                           <div className="info-row">
                             <span className="info-label">Porsi Modal</span>
-                            <span className="info-val">Rp {Math.round(inv.deposit).toLocaleString('id-ID')}</span>
+                            <span className="info-val" style={{ textAlign: 'right' }}>
+                              <div>Rp {Math.round(inv.deposit).toLocaleString('id-ID')}</div>
+                              <div style={{ fontSize: '0.62rem', color: 'var(--text-secondary)', fontFamily: 'var(--mono)' }}>
+                                {(inv.deposit / exchangeRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                              </div>
+                            </span>
                           </div>
                           
                           <div className="info-row">
                             <span className="info-label">Bagi Profit (Net)</span>
-                            <span className={`info-val ${isProfitShare ? 'text-profit' : 'text-loss'}`}>
-                              {isProfitShare ? '+' : ''}Rp {Math.round(inv.netProfitShare).toLocaleString('id-ID')}
+                            <span className={`info-val ${isProfitShare ? 'text-profit' : 'text-loss'}`} style={{ textAlign: 'right' }}>
+                              <div>{isProfitShare ? '+' : ''}Rp {Math.round(inv.netProfitShare).toLocaleString('id-ID')}</div>
+                              <div style={{ fontSize: '0.62rem', fontFamily: 'var(--mono)' }}>
+                                {isProfitShare ? '+' : ''}${(inv.netProfitShare / exchangeRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                              </div>
                             </span>
                           </div>
                           
@@ -952,11 +1063,16 @@ export default function App() {
                           </div>
                         </div>
                         
-                        <div className="card-footer">
+                        <div className="card-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span className="footer-label">Nilai Bersih</span>
-                          <span className="footer-val">
-                            Rp {Math.round(inv.currentValue).toLocaleString('id-ID')}
-                          </span>
+                          <div style={{ textAlign: 'right' }}>
+                            <span className="footer-val" style={{ display: 'block' }}>
+                              Rp {Math.round(inv.currentValue).toLocaleString('id-ID')}
+                            </span>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--color-lime)', fontWeight: 700, fontFamily: 'var(--mono)' }}>
+                              {(inv.currentValue / exchangeRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                            </span>
+                          </div>
                         </div>
                       </div>
                     );
@@ -1035,12 +1151,14 @@ export default function App() {
             <div className="dialog-content" style={{ maxWidth: '580px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h2 style={{ fontSize: '1.1rem', fontWeight: 800 }}>Manage Investors Pool</h2>
-                <button type="button" className="btn-titan" style={{ padding: '0.3rem 0.6rem' }} onClick={() => setIsManageInvestorsOpen(false)}>✕</button>
+                <button type="button" className="btn-titan" style={{ padding: '0.3rem 0.6rem' }} onClick={() => { setIsManageInvestorsOpen(false); handleCancelEdit(); }}>✕</button>
               </div>
 
-              {/* Add Investor Form */}
-              <form onSubmit={handleAddInvestor} style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '1rem' }}>
-                <span className="label-muted" style={{ fontSize: '0.55rem' }}>Tambah Investor Baru</span>
+              {/* Add/Edit Investor Form */}
+              <form onSubmit={handleSaveInvestor} style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '1rem' }}>
+                <span className="label-muted" style={{ fontSize: '0.55rem' }}>
+                  {editingInvestorId ? 'Edit Data Investor' : 'Tambah Investor Baru'}
+                </span>
                 <div className="form-grid-add-investor">
                   <input
                     type="text"
@@ -1074,9 +1192,35 @@ export default function App() {
                     required
                   />
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.2rem' }}>
+                
+                {/* Penyesuaian Modal Tengah Siklus */}
+                {isStarted && startingCapitalIdr > 0 && currentBalanceIdr > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginTop: '0.2rem', padding: '0.6rem 0.85rem', background: 'rgba(212, 255, 58, 0.04)', border: '1px dashed rgba(212, 255, 58, 0.15)', borderRadius: '16px', textAlign: 'left' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.75rem', color: 'var(--color-lime)', cursor: 'pointer', fontWeight: 600 }}>
+                      <input
+                        type="checkbox"
+                        checked={autoAdjustMidCycle}
+                        onChange={(e) => setAutoAdjustMidCycle(e.target.checked)}
+                        style={{ accentColor: 'var(--color-lime)', cursor: 'pointer' }}
+                      />
+                      Sesuaikan Modal Otomatis (Masuk Tengah Siklus)
+                    </label>
+                    {autoAdjustMidCycle && parseFloat(newInvDeposit) > 0 && (
+                      <span style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                        Porsi modal diakui di sistem: <strong style={{ color: 'var(--color-lime)', fontFamily: 'var(--mono)' }}>Rp {adjustedDepositPreview.toLocaleString('id-ID')}</strong> (Uang riil ditransfer tetap <strong>Rp {parseFloat(newInvDeposit).toLocaleString('id-ID')}</strong> agar adil bagi investor lama).
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.2rem' }}>
+                  {editingInvestorId && (
+                    <button type="button" className="btn-titan" style={{ padding: '0.5rem 1.25rem' }} onClick={handleCancelEdit}>
+                      Batal
+                    </button>
+                  )}
                   <button type="submit" className="btn-gold" style={{ padding: '0.5rem 1.25rem' }}>
-                    <Plus size={14} /> Tambah Investor
+                    {editingInvestorId ? 'Simpan Perubahan' : <><Plus size={14} /> Tambah Investor</>}
                   </button>
                 </div>
               </form>
@@ -1092,13 +1236,22 @@ export default function App() {
                         Modal: Rp {inv.deposit.toLocaleString('id-ID')} | Fee: {inv.adminFeePct || 20}% | Gabung: {inv.joinDate || '2026-06-01'}
                       </div>
                     </div>
-                    <button
-                      onClick={() => handleDeleteInvestor(inv.id)}
-                      className="btn-danger-titan"
-                      style={{ padding: '0.3rem 0.6rem' }}
-                    >
-                      <Trash2 size={12} /> Hapus
-                    </button>
+                    <div style={{ display: 'flex', gap: '0.4rem' }}>
+                      <button
+                        onClick={() => handleStartEditInvestor(inv)}
+                        className="btn-titan"
+                        style={{ padding: '0.35rem 0.75rem', fontSize: '0.7rem' }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDeleteInvestor(inv.id)}
+                        className="btn-danger-titan"
+                        style={{ padding: '0.35rem 0.75rem' }}
+                      >
+                        <Trash2 size={12} /> Hapus
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1113,7 +1266,7 @@ export default function App() {
                 >
                   <RefreshCw size={12} /> Reset Console (Default)
                 </button>
-                <button type="button" className="btn-titan" onClick={() => setIsManageInvestorsOpen(false)}>Done</button>
+                <button type="button" className="btn-titan" onClick={() => { setIsManageInvestorsOpen(false); handleCancelEdit(); }}>Done</button>
               </div>
             </div>
           </div>
