@@ -83,27 +83,6 @@ export default function App() {
   const [newInvAdminFeePct, setNewInvAdminFeePct] = useState('20');
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [autoAdjustMidCycle, setAutoAdjustMidCycle] = useState(true);
-
-  // Preview of deposit adjustment when entering mid-cycle
-  const adjustedDepositPreview = useMemo(() => {
-    const depositVal = parseFloat(newInvDeposit);
-    if (!depositVal || isNaN(depositVal) || depositVal <= 0) return 0;
-    if (!isStarted || startingCapitalIdr <= 0 || currentBalanceIdr <= 0 || !autoAdjustMidCycle) {
-      return depositVal;
-    }
-    
-    if (editingInvestorId) {
-      const oldInv = investors.find(i => i.id === editingInvestorId);
-      if (oldInv) {
-        const diff = depositVal - oldInv.deposit;
-        if (diff <= 0) return depositVal; // No adjustment for reduction/no change
-        const adjustedDiff = Math.round(diff * (startingCapitalIdr / currentBalanceIdr));
-        return oldInv.deposit + adjustedDiff;
-      }
-    }
-    
-    return Math.round(depositVal * (startingCapitalIdr / currentBalanceIdr));
-  }, [newInvDeposit, isStarted, startingCapitalIdr, currentBalanceIdr, autoAdjustMidCycle, editingInvestorId, investors]);
   
   // Manual Pool Balance (If not using API Sync)
   const [manualPoolBalanceIdr, setManualPoolBalanceIdr] = useState(() => 
@@ -302,6 +281,27 @@ export default function App() {
     if (isStarted) return startBalanceIdr;
     return investors.reduce((sum, inv) => sum + parseFloat(inv.deposit || 0), 0);
   }, [isStarted, startBalanceIdr, investors]);
+
+  // Preview of deposit adjustment when entering mid-cycle
+  const adjustedDepositPreview = useMemo(() => {
+    const depositVal = parseFloat(newInvDeposit);
+    if (!depositVal || isNaN(depositVal) || depositVal <= 0) return 0;
+    if (!isStarted || startingCapitalIdr <= 0 || currentBalanceIdr <= 0 || !autoAdjustMidCycle) {
+      return depositVal;
+    }
+    
+    if (editingInvestorId) {
+      const oldInv = investors.find(i => i.id === editingInvestorId);
+      if (oldInv) {
+        const diff = depositVal - oldInv.deposit;
+        if (diff <= 0) return depositVal; // No adjustment for reduction/no change
+        const adjustedDiff = Math.round(diff * (startingCapitalIdr / currentBalanceIdr));
+        return oldInv.deposit + adjustedDiff;
+      }
+    }
+    
+    return Math.round(depositVal * (startingCapitalIdr / currentBalanceIdr));
+  }, [newInvDeposit, isStarted, startingCapitalIdr, currentBalanceIdr, autoAdjustMidCycle, editingInvestorId, investors]);
 
   // Overall ROI and Profit calculations
   const totalProfitIdr = useMemo(() => {
