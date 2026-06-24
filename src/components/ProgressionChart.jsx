@@ -5,9 +5,7 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-  Tooltip,
-  Legend,
-  ReferenceLine
+  Tooltip
 } from 'recharts';
 
 const CustomTooltip = ({ active, payload, label }) => {

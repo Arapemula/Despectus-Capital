@@ -18,6 +18,10 @@ import ProgressionChart from './components/ProgressionChart';
 
 gsap.registerPlugin();
 
+const generateUniqueId = () => {
+  return Date.now().toString(36) + Math.random().toString(36).substring(2, 9);
+};
+
 export default function App() {
   // App States
   const [loading, setLoading] = useState(false);
@@ -28,8 +32,8 @@ export default function App() {
   
   // API Keys state (Server locked vs Local storage)
   const [isLockedByServer, setIsLockedByServer] = useState(false);
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('exchange_api_key_local') || '');
-  const [apiSecret, setApiSecret] = useState(() => localStorage.getItem('exchange_api_secret_local') || '');
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('exchange_api_key_local') || ''); // eslint-disable-line no-unused-vars
+  const [apiSecret, setApiSecret] = useState(() => localStorage.getItem('exchange_api_secret_local') || ''); // eslint-disable-line no-unused-vars
   const [useExchangeApi, setUseExchangeApi] = useState(true);
   
   // Live balance from Exchange API
@@ -42,6 +46,7 @@ export default function App() {
   const [chartHistory, setChartHistory] = useState([]);
   const [cycleStartTime, setCycleStartTime] = useState(null);
   const [isDbConnected, setIsDbConnected] = useState(false);
+  const [poolHash, setPoolHash] = useState('');
 
   // Authentication state
   const [isAdmin, setIsAdmin] = useState(false);
@@ -51,6 +56,8 @@ export default function App() {
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isManageInvestorsOpen, setIsManageInvestorsOpen] = useState(false);
   const [editingInvestorId, setEditingInvestorId] = useState(null);
+  const [withdrawingInvestorId, setWithdrawingInvestorId] = useState(null);
+  const [withdrawAmountInput, setWithdrawAmountInput] = useState('');
 
   // Custom Confirmation Dialog State
   const [confirmConfig, setConfirmConfig] = useState({
@@ -88,7 +95,7 @@ export default function App() {
   const [manualPoolBalanceIdr, setManualPoolBalanceIdr] = useState(() => 
     parseFloat(localStorage.getItem('invest_manual_pool_balance') || '8200000')
   );
-  const [manualPoolBalanceInput, setManualPoolBalanceInput] = useState(() => 
+  const [manualPoolBalanceInput, setManualPoolBalanceInput] = useState(() => // eslint-disable-line no-unused-vars
     localStorage.getItem('invest_manual_pool_balance') || '8200000'
   );
 
@@ -181,6 +188,16 @@ export default function App() {
         setChartHistory(data.pool.history || []);
         setCycleStartTime(data.pool.cycleStartTime || null);
         setIsDbConnected(!!data.isDbConnected);
+        if (data.hash) {
+          setPoolHash(data.hash);
+        }
+
+        // Inisialisasi manual pool balance dari titik riwayat terakhir di server jika tersedia
+        if (data.pool.history && data.pool.history.length > 0) {
+          const lastHistoryPoint = data.pool.history[data.pool.history.length - 1];
+          setManualPoolBalanceIdr(lastHistoryPoint.balance);
+          setManualPoolBalanceInput(lastHistoryPoint.balance.toString());
+        }
       }
     } catch (err) {
       console.error('Failed to fetch pool state:', err);
@@ -217,6 +234,7 @@ export default function App() {
       if (ratesIntervalRef.current) clearInterval(ratesIntervalRef.current);
       if (successTimeoutRef.current) clearTimeout(successTimeoutRef.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Fetch Exchange details
@@ -233,6 +251,31 @@ export default function App() {
       if (data.success) {
         setApiBalanceUsd(data.totalUsdValue);
         if (!silent) triggerToast('Sinkronisasi data API berhasil!');
+
+        // Sync to history if cycle is started and admin is logged in
+        const token = sessionStorage.getItem('admin_session_token') || adminToken;
+        if (token && isStarted) {
+          const calculatedBalanceIdr = Math.max(0, data.totalUsdValue * exchangeRate - pendingWithdrawalsMetrics.totalNet);
+          const todayLabel = new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
+          const lastPoint = chartHistory[chartHistory.length - 1];
+          if (!lastPoint || lastPoint.date !== todayLabel || Math.abs(lastPoint.balance - calculatedBalanceIdr) > 100) {
+            fetch('/api/pool/history', {
+              method: 'POST',
+              headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+              },
+              body: JSON.stringify({ date: todayLabel, balance: calculatedBalanceIdr })
+            }).then(r => r.json()).then(hData => {
+              if (hData.success && hData.hash) {
+                setPoolHash(hData.hash);
+                if (hData.pool && hData.pool.history) {
+                  setChartHistory(hData.pool.history);
+                }
+              }
+            }).catch(err => console.error(err));
+          }
+        }
       } else {
         if (!silent) triggerToast(data.error || 'Autentikasi API ditolak.', false);
       }
@@ -247,7 +290,7 @@ export default function App() {
   // Sync automatically if using Exchange API keys on mount
   useEffect(() => {
     if (useExchangeApi && (isLockedByServer || (apiKey && apiSecret))) {
-      fetchExchangeDetails();
+      fetchExchangeDetails(); // eslint-disable-line react-hooks/set-state-in-effect
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [useExchangeApi, isLockedByServer]);
@@ -266,21 +309,63 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [useExchangeApi, isLockedByServer, apiKey, apiSecret]);
 
-  // Current Live balance in IDR
+  // Total pending withdrawals (net and capital deduction)
+  const pendingWithdrawalsMetrics = useMemo(() => { // eslint-disable-line react-hooks/preserve-manual-memoization
+    let totalNet = 0;
+    let totalPokok = 0;
+    investors.forEach(inv => {
+      if (Array.isArray(inv.pendingWithdrawals)) {
+        inv.pendingWithdrawals.forEach(w => {
+          totalNet += parseFloat(w.amount || 0);
+          totalPokok += parseFloat(w.deltaDeposit || 0);
+        });
+      }
+    });
+    return { totalNet, totalPokok };
+  }, [investors]);
+
+  // Flattened list of all pending withdrawals across all investors
+  const allPendingWithdrawals = useMemo(() => {
+    const list = [];
+    investors.forEach(inv => {
+      if (Array.isArray(inv.pendingWithdrawals)) {
+        inv.pendingWithdrawals.forEach(w => {
+          list.push({
+            investorId: inv.id,
+            investorName: inv.name,
+            ...w
+          });
+        });
+      }
+    });
+    // Sort by timestamp (oldest first)
+    return list.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  }, [investors]);
+
+  // Current Live balance in IDR (adjusted virtually by pending withdrawals)
   const currentBalanceIdr = useMemo(() => {
+    let rawBalance;
     if (useExchangeApi) {
-      return apiBalanceUsd * exchangeRate;
+      rawBalance = apiBalanceUsd * exchangeRate;
+    } else {
+      rawBalance = manualPoolBalanceIdr;
     }
-    return manualPoolBalanceIdr;
-  }, [useExchangeApi, apiBalanceUsd, exchangeRate, manualPoolBalanceIdr]);
+    // Subtract pending net withdrawals if cycle is active to prevent profit percentage spike
+    if (isStarted) {
+      return Math.max(0, rawBalance - pendingWithdrawalsMetrics.totalNet);
+    }
+    return rawBalance;
+  }, [useExchangeApi, apiBalanceUsd, exchangeRate, manualPoolBalanceIdr, isStarted, pendingWithdrawalsMetrics.totalNet]);
 
   const currentBalanceUsd = currentBalanceIdr / exchangeRate;
 
-  // Determine baseline starting capital (sum of investor deposits if Reset, or locked start balance if Started)
+  // Determine baseline starting capital (adjusted virtually by pending withdrawals if active)
   const startingCapitalIdr = useMemo(() => {
-    if (isStarted) return startBalanceIdr;
+    if (isStarted) {
+      return Math.max(0, startBalanceIdr - pendingWithdrawalsMetrics.totalPokok);
+    }
     return investors.reduce((sum, inv) => sum + parseFloat(inv.deposit || 0), 0);
-  }, [isStarted, startBalanceIdr, investors]);
+  }, [isStarted, startBalanceIdr, investors, pendingWithdrawalsMetrics.totalPokok]);
 
   // Preview of deposit adjustment when entering mid-cycle
   const adjustedDepositPreview = useMemo(() => {
@@ -315,15 +400,35 @@ export default function App() {
     return (totalProfitIdr / startingCapitalIdr) * 100;
   }, [isStarted, totalProfitIdr, startingCapitalIdr]);
 
-  // Share and Net Profit splits calculations
+  // Share and Net Profit splits calculations (adjusted virtually for pending withdrawals)
   const investorCalculations = useMemo(() => {
-    const totalDeposits = investors.reduce((sum, inv) => sum + parseFloat(inv.deposit || 0), 0);
+    // Calculate virtual deposits (actual deposit minus pending pokok withdrawals)
+    const virtualInvestors = investors.map(inv => {
+      let pendingPokok = 0;
+      let pendingNet = 0;
+      if (Array.isArray(inv.pendingWithdrawals)) {
+        inv.pendingWithdrawals.forEach(w => {
+          pendingPokok += parseFloat(w.deltaDeposit || 0);
+          pendingNet += parseFloat(w.amount || 0);
+        });
+      }
+      const rawDeposit = parseFloat(inv.deposit || 0);
+      const virtualDeposit = Math.max(0, rawDeposit - pendingPokok);
+      return {
+        ...inv,
+        rawDeposit,
+        virtualDeposit,
+        pendingPokok,
+        pendingNet
+      };
+    });
+
+    const totalVirtualDeposits = virtualInvestors.reduce((sum, inv) => sum + inv.virtualDeposit, 0);
     
-    return investors.map(inv => {
-      const deposit = parseFloat(inv.deposit || 0);
-      const sharePct = totalDeposits > 0 ? (deposit / totalDeposits) * 100 : 0;
+    return virtualInvestors.map(inv => {
+      const sharePct = totalVirtualDeposits > 0 ? (inv.virtualDeposit / totalVirtualDeposits) * 100 : 0;
       
-      // Gross Profit share
+      // Gross Profit share (based on virtual profit)
       const grossProfitShare = isStarted ? (sharePct / 100) * totalProfitIdr : 0;
       
       // Admin Fee (defaults to 20% if not set)
@@ -332,7 +437,7 @@ export default function App() {
       
       // Net Profit share
       const netProfitShare = grossProfitShare - adminFee;
-      const currentValue = deposit + netProfitShare;
+      const currentValue = inv.virtualDeposit + netProfitShare;
       
       return {
         ...inv,
@@ -345,20 +450,71 @@ export default function App() {
     });
   }, [investors, totalProfitIdr, isStarted]);
 
+  // Selected investor for withdrawal calculations
+  const withdrawingInvestorCalc = useMemo(() => {
+    if (!withdrawingInvestorId) return null;
+    return investorCalculations.find(i => i.id === withdrawingInvestorId);
+  }, [investorCalculations, withdrawingInvestorId]);
+
+  // Live preview for withdrawal math
+  const withdrawPreview = useMemo(() => {
+    const amount = parseFloat(withdrawAmountInput);
+    if (isNaN(amount) || amount <= 0 || !withdrawingInvestorCalc) {
+      return { deltaDeposit: 0, adminFeePaid: 0, previewRemainingNet: withdrawingInvestorCalc?.currentValue || 0 };
+    }
+
+    const P = totalGainPct / 100;
+    const F = (withdrawingInvestorCalc.adminFeePct !== undefined ? withdrawingInvestorCalc.adminFeePct : 20) / 100;
+
+    let deltaDeposit;
+    let adminFeePaid;
+
+    if (P > 0) {
+      // deltaDeposit = amount / (1 + P * (1 - F))
+      deltaDeposit = amount / (1 + P * (1 - F));
+      adminFeePaid = deltaDeposit * P * F;
+    } else {
+      // deltaDeposit = amount / (1 + P) dengan pengaman division-by-zero
+      deltaDeposit = (1 + P <= 0) ? 0 : amount / (1 + P);
+      adminFeePaid = 0;
+    }
+
+    const previewRemainingNet = withdrawingInvestorCalc.currentValue - amount;
+
+    return {
+      deltaDeposit: Math.round(deltaDeposit),
+      adminFeePaid: Math.round(adminFeePaid),
+      previewRemainingNet: Math.round(previewRemainingNet)
+    };
+  }, [withdrawAmountInput, withdrawingInvestorCalc, totalGainPct]);
+
+  // Total admin fee accumulated in the current cycle
+  const totalAdminFeeIdr = useMemo(() => {
+    return investorCalculations.reduce((sum, inv) => sum + (inv.adminFee || 0), 0);
+  }, [investorCalculations]);
+
   // Snapshot active balance to server history
-  const handleUpdateManualBalance = async (newVal) => {
+  const handleUpdateManualBalance = async (newVal) => { // eslint-disable-line no-unused-vars
     setManualPoolBalanceIdr(newVal);
     setManualPoolBalanceInput(newVal.toString());
     localStorage.setItem('invest_manual_pool_balance', newVal.toString());
 
     if (isStarted) {
       try {
+        const token = sessionStorage.getItem('admin_session_token') || adminToken;
         const todayLabel = new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
-        await fetch('/api/pool/history', {
+        const res = await fetch('/api/pool/history', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
           body: JSON.stringify({ date: todayLabel, balance: newVal })
         });
+        const data = await res.json();
+        if (data.success && data.hash) {
+          setPoolHash(data.hash);
+        }
         await fetchPoolState();
       } catch (err) {
         console.error(err);
@@ -366,21 +522,8 @@ export default function App() {
     }
   };
 
-  // Automated daily sync for history data point
-  useEffect(() => {
-    if (isStarted && currentBalanceIdr > 0) {
-      const todayLabel = new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
-      const lastPoint = chartHistory[chartHistory.length - 1];
-      if (!lastPoint || lastPoint.date !== todayLabel || Math.abs(lastPoint.balance - currentBalanceIdr) > 100) {
-        fetch('/api/pool/history', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date: todayLabel, balance: currentBalanceIdr })
-        }).then(() => fetchPoolState()).catch(err => console.error(err));
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentBalanceIdr, isStarted]);
+  // Automated daily sync removed to prevent infinite loop and secure endpoint.
+  // Synchronization now runs on successful Exchange Fetch or manual balance updates.
 
   // Progression Chart data formatting
   const chartData = useMemo(() => {
@@ -403,7 +546,7 @@ export default function App() {
   }, [chartHistory, currentBalanceIdr]);
 
   // Win Rate calculation based on history curve
-  const winRateMetrics = useMemo(() => {
+  const winRateMetrics = useMemo(() => { // eslint-disable-line no-unused-vars
     let total = 0;
     let wins = 0;
     let losses = 0;
@@ -457,9 +600,13 @@ export default function App() {
 
   // Sync update investors
   const syncInvestorsToServer = async (updatedList, newStartBalance) => {
+    setLoading(true);
     try {
       const token = sessionStorage.getItem('admin_session_token') || adminToken;
-      const body = { investors: updatedList };
+      const body = { 
+        investors: updatedList,
+        expectedHash: poolHash
+      };
       if (newStartBalance !== undefined) {
         body.startBalanceIdr = newStartBalance;
       }
@@ -472,7 +619,17 @@ export default function App() {
         body: JSON.stringify(body)
       });
       const data = await res.json();
+
+      if (res.status === 409) {
+        triggerToast(data.error || 'Konflik data terdeteksi.', false);
+        await fetchPoolState();
+        return;
+      }
+
       if (data.success) {
+        if (data.hash) {
+          setPoolHash(data.hash);
+        }
         await fetchPoolState();
       } else {
         triggerToast(data.error || 'Gagal menyimpan perubahan ke server.', false);
@@ -480,6 +637,8 @@ export default function App() {
     } catch (err) {
       console.error(err);
       triggerToast('Koneksi server gagal saat sinkronisasi.', false);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -528,6 +687,11 @@ export default function App() {
   // Reset Cycle Action (compounds net value and stops the cycle)
   const handleResetCycle = () => {
     if (!isStarted) return;
+
+    if (allPendingWithdrawals.length > 0) {
+      triggerToast('Gagal: Selesaikan atau batalkan semua pending withdrawal terlebih dahulu sebelum mereset siklus!', false);
+      return;
+    }
     
     triggerConfirm(
       'Reset & Gulung Siklus',
@@ -552,11 +716,22 @@ export default function App() {
             },
             body: JSON.stringify({
               updatedInvestors: compoundedInvestors,
-              currentBalanceIdr
+              currentBalanceIdr,
+              expectedHash: poolHash
             })
           });
           const data = await res.json();
+
+          if (res.status === 409) {
+            triggerToast(data.error || 'Konflik data terdeteksi.', false);
+            await fetchPoolState();
+            return;
+          }
+
           if (data.success) {
+            if (data.hash) {
+              setPoolHash(data.hash);
+            }
             await fetchPoolState();
             triggerToast('Siklus investasi dihentikan & profit berhasil digulung!');
           } else {
@@ -571,7 +746,7 @@ export default function App() {
   };
 
   // Toggle Data Source
-  const handleToggleDataSource = (val) => {
+  const handleToggleDataSource = (val) => { // eslint-disable-line no-unused-vars
     setUseExchangeApi(val);
     localStorage.setItem('invest_use_exchange_api', val.toString());
     triggerToast(val ? 'Sumber data dialihkan ke API Sync.' : 'Sumber data dialihkan ke Input Manual.');
@@ -682,7 +857,7 @@ export default function App() {
       }
 
       const newInv = {
-        id: Math.random().toString(),
+        id: generateUniqueId(),
         name: newInvName.trim(),
         deposit: finalDeposit,
         joinDate: newInvJoinDate,
@@ -712,6 +887,10 @@ export default function App() {
       return;
     }
     const targetInv = investors.find(i => i.id === id);
+    if (targetInv && Array.isArray(targetInv.pendingWithdrawals) && targetInv.pendingWithdrawals.length > 0) {
+      triggerToast('Gagal: Selesaikan atau batalkan pending withdrawal investor ini sebelum menghapus!', false);
+      return;
+    }
     const updated = investors.filter(i => i.id !== id);
     setInvestors(updated);
     
@@ -722,6 +901,149 @@ export default function App() {
     }
     triggerToast('Investor berhasil dihapus.');
     await syncInvestorsToServer(updated, newStart);
+  };
+
+  const handleProcessWithdrawal = async (e) => {
+    e.preventDefault();
+    if (!withdrawingInvestorCalc) return;
+    
+    const amount = parseFloat(withdrawAmountInput);
+    if (isNaN(amount) || amount <= 0) {
+      triggerToast('Jumlah penarikan tidak valid.', false);
+      return;
+    }
+    
+    if (amount > withdrawingInvestorCalc.currentValue) {
+      triggerToast('Jumlah penarikan melebihi nilai bersih investor!', false);
+      return;
+    }
+
+    const newPendingWithdrawal = {
+      id: generateUniqueId(),
+      amount,
+      deltaDeposit: withdrawPreview.deltaDeposit,
+      adminFeePaid: withdrawPreview.adminFeePaid,
+      timestamp: Date.now()
+    };
+
+    const updated = investors.map(inv => {
+      if (inv.id === withdrawingInvestorId) {
+        const currentPending = Array.isArray(inv.pendingWithdrawals) ? inv.pendingWithdrawals : [];
+        return {
+          ...inv,
+          pendingWithdrawals: [...currentPending, newPendingWithdrawal]
+        };
+      }
+      return inv;
+    });
+
+    triggerToast(`Mengajukan penarikan Rp ${Math.round(amount).toLocaleString('id-ID')} (Pending)...`);
+    setWithdrawingInvestorId(null);
+    setWithdrawAmountInput('');
+
+    await syncInvestorsToServer(updated, startBalanceIdr);
+  };
+
+  const handleConfirmWithdrawal = async (investorId, withdrawalId) => {
+    const targetInvestor = investors.find(i => i.id === investorId);
+    if (!targetInvestor) return;
+
+    const targetWithdrawal = Array.isArray(targetInvestor.pendingWithdrawals)
+      ? targetInvestor.pendingWithdrawals.find(w => w.id === withdrawalId)
+      : null;
+    
+    if (!targetWithdrawal) return;
+
+    const amount = targetWithdrawal.amount;
+    const deltaDeposit = targetWithdrawal.deltaDeposit;
+
+    triggerConfirm(
+      'Konfirmasi Penarikan Sukses',
+      `Apakah Anda yakin sudah mentransfer Rp ${Math.round(amount).toLocaleString('id-ID')} ke ${targetInvestor.name}? Modal investor akan dikurangi secara permanen.`,
+      async () => {
+        const updated = investors.map(inv => {
+          if (inv.id === investorId) {
+            const remainingPending = inv.pendingWithdrawals.filter(w => w.id !== withdrawalId);
+            return {
+              ...inv,
+              deposit: Math.max(0, inv.deposit - deltaDeposit),
+              pendingWithdrawals: remainingPending
+            };
+          }
+          return inv;
+        });
+
+        let newStart = startBalanceIdr;
+        if (isStarted) {
+          newStart = Math.max(0, startBalanceIdr - deltaDeposit);
+          setStartBalanceIdr(newStart);
+        }
+
+        if (!useExchangeApi) {
+          const newManualBalance = Math.max(0, manualPoolBalanceIdr - amount);
+          setManualPoolBalanceIdr(newManualBalance);
+          setManualPoolBalanceInput(newManualBalance.toString());
+          localStorage.setItem('invest_manual_pool_balance', newManualBalance.toString());
+
+          if (isStarted) {
+            try {
+              const token = sessionStorage.getItem('admin_session_token') || adminToken;
+              const todayLabel = new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
+              const res = await fetch('/api/pool/history', {
+                method: 'POST',
+                headers: { 
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ date: todayLabel, balance: newManualBalance })
+              });
+              const data = await res.json();
+              if (data.success && data.hash) {
+                setPoolHash(data.hash);
+              }
+            } catch (err) {
+              console.error('Failed to update manual balance history point:', err);
+            }
+          }
+        }
+
+        triggerToast(`Penarikan ${targetInvestor.name} sebesar Rp ${Math.round(amount).toLocaleString('id-ID')} dikonfirmasi!`);
+        await syncInvestorsToServer(updated, newStart);
+      }
+    );
+  };
+
+  const handleCancelWithdrawal = async (investorId, withdrawalId) => {
+    const targetInvestor = investors.find(i => i.id === investorId);
+    if (!targetInvestor) return;
+
+    const targetWithdrawal = Array.isArray(targetInvestor.pendingWithdrawals)
+      ? targetInvestor.pendingWithdrawals.find(w => w.id === withdrawalId)
+      : null;
+    
+    if (!targetWithdrawal) return;
+
+    const amount = targetWithdrawal.amount;
+
+    triggerConfirm(
+      'Batalkan Pengajuan Penarikan',
+      `Apakah Anda yakin ingin membatalkan pengajuan penarikan Rp ${Math.round(amount).toLocaleString('id-ID')} untuk ${targetInvestor.name}?`,
+      async () => {
+        const updated = investors.map(inv => {
+          if (inv.id === investorId) {
+            const remainingPending = inv.pendingWithdrawals.filter(w => w.id !== withdrawalId);
+            return {
+              ...inv,
+              pendingWithdrawals: remainingPending
+            };
+          }
+          return inv;
+        });
+
+        triggerToast(`Pengajuan penarikan Rp ${Math.round(amount).toLocaleString('id-ID')} dibatalkan.`);
+        await syncInvestorsToServer(updated, startBalanceIdr);
+      }
+    );
   };
 
   return (
@@ -970,6 +1292,11 @@ export default function App() {
                             <div className="td-wrapper">
                               <div>{inv.name}</div>
                               <div style={{ fontSize: '0.58rem', color: 'var(--text-muted)' }}>Gabung: {inv.joinDate || '2026-06-01'}</div>
+                              {inv.pendingNet > 0 && (
+                                <div style={{ fontSize: '0.6rem', color: 'var(--color-lavender)', background: 'rgba(184, 155, 251, 0.08)', border: '1px solid rgba(184, 155, 251, 0.15)', padding: '1px 6px', borderRadius: '4px', display: 'inline-block', marginTop: '4px', width: 'fit-content', fontFamily: 'var(--mono)' }}>
+                                  Pending WD: Rp {inv.pendingNet.toLocaleString('id-ID')}
+                                </div>
+                              )}
                             </div>
                           </td>
                           <td style={{ padding: '0.6rem 0.25rem', textAlign: 'right' }}>
@@ -1022,6 +1349,11 @@ export default function App() {
                           <div className="investor-info">
                             <span className="investor-name">{inv.name}</span>
                             <span className="investor-date">Gabung: {inv.joinDate || '2026-06-01'}</span>
+                            {inv.pendingNet > 0 && (
+                              <span style={{ fontSize: '0.6rem', color: 'var(--color-lavender)', background: 'rgba(184, 155, 251, 0.08)', border: '1px solid rgba(184, 155, 251, 0.15)', padding: '1px 6px', borderRadius: '4px', display: 'inline-block', marginTop: '4px', width: 'fit-content', fontFamily: 'var(--mono)' }}>
+                                Pending WD: Rp {inv.pendingNet.toLocaleString('id-ID')}
+                              </span>
+                            )}
                           </div>
                           <span className="investor-badge-share">
                             {inv.sharePct.toFixed(1)}% Share
@@ -1056,8 +1388,8 @@ export default function App() {
                             </div>
                             <div className="fee-item">
                               <span>Fee Admin ({inv.adminFeePct || 20}%)</span>
-                              <span className="fee-val" style={{ color: 'var(--color-crimson)' }}>
-                                -Rp {Math.round(inv.adminFee).toLocaleString('id-ID')}
+                              <span className="fee-val" style={{ color: inv.adminFee > 0 ? 'var(--color-crimson)' : 'var(--text-secondary)' }}>
+                                {inv.adminFee > 0 ? '-' : ''}Rp {Math.round(inv.adminFee).toLocaleString('id-ID')}
                               </span>
                             </div>
                           </div>
@@ -1088,6 +1420,58 @@ export default function App() {
                   <h2 style={{ fontSize: '0.85rem' }}>Cycle Control Center</h2>
                   <span className="label-muted" style={{ fontSize: '0.65rem' }}>Panel Kontrol Siklus Admin</span>
                 </div>
+
+                {isStarted && (
+                  <div style={{ padding: '0.75rem 1rem', background: 'rgba(212, 255, 58, 0.04)', border: '1px solid rgba(212, 255, 58, 0.1)', borderRadius: '16px', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                    <span className="label-muted" style={{ fontSize: '0.58rem', color: 'var(--color-lime)' }}>Akumulasi Fee Admin Siklus Ini</span>
+                    <span style={{ fontSize: '1.25rem', fontWeight: 700, fontFamily: 'var(--mono)', color: '#fff' }}>
+                      Rp {Math.round(totalAdminFeeIdr).toLocaleString('id-ID')}
+                    </span>
+                    <span style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', fontFamily: 'var(--mono)' }}>
+                      Equivalent: ${(totalAdminFeeIdr / exchangeRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                    </span>
+                  </div>
+                )}
+
+                {isStarted && allPendingWithdrawals.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.2rem', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '0.75rem' }}>
+                    <span className="label-muted" style={{ fontSize: '0.58rem', color: 'var(--color-lavender)' }}>Antrean Penarikan (Pending WD)</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', maxHeight: '180px', overflowY: 'auto', paddingRight: '2px' }}>
+                      {allPendingWithdrawals.map(w => (
+                        <div key={w.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)', padding: '0.65rem 0.8rem', borderRadius: '12px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontWeight: 700, fontSize: '0.76rem', color: '#fff' }}>{w.investorName}</span>
+                            <span style={{ fontFamily: 'var(--mono)', fontSize: '0.76rem', color: 'var(--color-lime)', fontWeight: 700 }}>
+                              Rp {Math.round(w.amount).toLocaleString('id-ID')}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.62rem', color: 'var(--text-secondary)' }}>
+                            <span>Potong Pokok: Rp {w.deltaDeposit.toLocaleString('id-ID')}</span>
+                            <span>Fee: Rp {w.adminFeePaid.toLocaleString('id-ID')}</span>
+                          </div>
+                          <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.2rem' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleConfirmWithdrawal(w.investorId, w.id)}
+                              className="btn-gold"
+                              style={{ flex: 1, padding: '0.25rem 0.5rem', fontSize: '0.62rem', height: 'auto', borderRadius: '8px' }}
+                            >
+                              Konfirmasi Transfer
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleCancelWithdrawal(w.investorId, w.id)}
+                              className="btn-danger-titan"
+                              style={{ flex: 0.4, padding: '0.25rem 0.5rem', fontSize: '0.62rem', height: 'auto', borderRadius: '8px' }}
+                            >
+                              Batal
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 
                 <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.2rem' }}>
                   <button
@@ -1215,12 +1599,12 @@ export default function App() {
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.2rem' }}>
                   {editingInvestorId && (
-                    <button type="button" className="btn-titan" style={{ padding: '0.5rem 1.25rem' }} onClick={handleCancelEdit}>
+                    <button type="button" className="btn-titan" style={{ padding: '0.5rem 1.25rem' }} onClick={handleCancelEdit} disabled={loading}>
                       Batal
                     </button>
                   )}
-                  <button type="submit" className="btn-gold" style={{ padding: '0.5rem 1.25rem' }}>
-                    {editingInvestorId ? 'Simpan Perubahan' : <><Plus size={14} /> Tambah Investor</>}
+                  <button type="submit" className="btn-gold" style={{ padding: '0.5rem 1.25rem' }} disabled={loading}>
+                    {loading ? 'Menyimpan...' : (editingInvestorId ? 'Simpan Perubahan' : <><Plus size={14} /> Tambah Investor</>)}
                   </button>
                 </div>
               </form>
@@ -1237,6 +1621,18 @@ export default function App() {
                       </div>
                     </div>
                     <div style={{ display: 'flex', gap: '0.4rem' }}>
+                      {isStarted && (
+                        <button
+                          onClick={() => {
+                            setWithdrawingInvestorId(inv.id);
+                            setWithdrawAmountInput('');
+                          }}
+                          className="btn-gold"
+                          style={{ padding: '0.35rem 0.75rem', fontSize: '0.7rem' }}
+                        >
+                          Tarik
+                        </button>
+                      )}
                       <button
                         onClick={() => handleStartEditInvestor(inv)}
                         className="btn-titan"
@@ -1269,6 +1665,99 @@ export default function App() {
                 <button type="button" className="btn-titan" onClick={() => { setIsManageInvestorsOpen(false); handleCancelEdit(); }}>Done</button>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ── Withdraw Capital Dialog (Admin-only) ────────────────────────────────────────────── */}
+        {withdrawingInvestorId && withdrawingInvestorCalc && (
+          <div className="dialog-overlay" style={{ zIndex: 1100 }}>
+            <form className="dialog-content" onSubmit={handleProcessWithdrawal} style={{ maxWidth: '420px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h2 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--color-lime)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  Tarik Dana Investor
+                </h2>
+                <button type="button" className="btn-titan" style={{ padding: '0.3rem 0.6rem' }} onClick={() => { setWithdrawingInvestorId(null); setWithdrawAmountInput(''); }}>✕</button>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                <div style={{ background: 'rgba(255,255,255,0.02)', padding: '0.8rem 1rem', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.04)' }}>
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.5px' }}>Investor</div>
+                  <div style={{ fontSize: '1.05rem', fontWeight: 700, color: '#fff', marginTop: '0.15rem' }}>{withdrawingInvestorCalc.name}</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.6rem', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '0.6rem' }}>
+                    <div>
+                      <span className="label-muted" style={{ fontSize: '0.58rem' }}>Modal Pokok</span>
+                      <div style={{ fontSize: '0.8rem', fontWeight: 700, fontFamily: 'var(--mono)', color: 'var(--text-secondary)' }}>Rp {Math.round(withdrawingInvestorCalc.deposit).toLocaleString('id-ID')}</div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <span className="label-muted" style={{ fontSize: '0.58rem', color: 'var(--color-lime)' }}>Nilai Bersih Saat Ini</span>
+                      <div style={{ fontSize: '0.85rem', fontWeight: 700, fontFamily: 'var(--mono)', color: 'var(--color-lime)' }}>Rp {Math.round(withdrawingInvestorCalc.currentValue).toLocaleString('id-ID')}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  <label className="label-muted" style={{ fontSize: '0.65rem' }}>Jumlah Penarikan Bersih (Rp)</label>
+                  <input
+                    type="number"
+                    placeholder={`Maks Rp ${Math.round(withdrawingInvestorCalc.currentValue).toLocaleString('id-ID')}`}
+                    value={withdrawAmountInput}
+                    onChange={(e) => setWithdrawAmountInput(e.target.value)}
+                    className="input-titan"
+                    required
+                    autoFocus
+                    max={Math.round(withdrawingInvestorCalc.currentValue)}
+                    min="1"
+                  />
+                </div>
+
+                {parseFloat(withdrawAmountInput) > 0 && parseFloat(withdrawAmountInput) <= withdrawingInvestorCalc.currentValue && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', background: 'rgba(212, 255, 58, 0.03)', border: '1px dashed rgba(212, 255, 58, 0.15)', padding: '0.85rem 1rem', borderRadius: '16px', fontSize: '0.74rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Uang Bersih Diterima:</span>
+                      <strong style={{ color: '#fff', fontFamily: 'var(--mono)' }}>Rp {parseFloat(withdrawAmountInput).toLocaleString('id-ID')}</strong>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Pengurangan Modal Pokok:</span>
+                      <strong style={{ color: 'var(--color-crimson)', fontFamily: 'var(--mono)' }}>-Rp {withdrawPreview.deltaDeposit.toLocaleString('id-ID')}</strong>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-secondary)' }}>Biaya Admin Realisasi ({withdrawingInvestorCalc.adminFeePct || 20}%):</span>
+                      <strong style={{ color: 'var(--color-lavender)', fontFamily: 'var(--mono)' }}>Rp {withdrawPreview.adminFeePaid.toLocaleString('id-ID')}</strong>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '0.4rem', marginTop: '0.1rem' }}>
+                      <span style={{ color: 'var(--color-lime)', fontWeight: 600 }}>Sisa Nilai Bersih:</span>
+                      <strong style={{ color: 'var(--color-lime)', fontFamily: 'var(--mono)' }}>Rp {withdrawPreview.previewRemainingNet.toLocaleString('id-ID')}</strong>
+                    </div>
+                  </div>
+                )}
+
+                {parseFloat(withdrawAmountInput) > withdrawingInvestorCalc.currentValue && (
+                  <div style={{ color: 'var(--color-crimson)', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(255, 59, 48, 0.05)', border: '1px solid rgba(255, 59, 48, 0.15)', padding: '0.5rem 0.75rem', borderRadius: '12px' }}>
+                    <AlertCircle size={14} /> Nominal penarikan melebihi saldo bersih investor!
+                  </div>
+                )}
+
+                <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', lineHeight: 1.4, opacity: 0.85 }}>
+                  {useExchangeApi ? (
+                    <span>⚠️ <strong>PENTING:</strong> Sistem hanya mengupdate pencatatan porsi modal. Anda harus mentransfer/menarik uang sebesar <strong>Rp {parseFloat(withdrawAmountInput || 0).toLocaleString('id-ID')}</strong> secara fisik dari akun Bybit agar sinkronisasi saldo tetap akurat.</span>
+                  ) : (
+                    <span>ℹ️ Saldo manual pool akan dikurangi sebesar <strong>Rp {parseFloat(withdrawAmountInput || 0).toLocaleString('id-ID')}</strong> secara otomatis setelah penarikan disetujui.</span>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <button
+                  type="submit"
+                  className="btn-gold"
+                  style={{ flex: 1 }}
+                  disabled={loading || !withdrawAmountInput || parseFloat(withdrawAmountInput) <= 0 || parseFloat(withdrawAmountInput) > withdrawingInvestorCalc.currentValue}
+                >
+                  {loading ? 'Memproses...' : 'Proses Penarikan'}
+                </button>
+                <button type="button" className="btn-titan" style={{ flex: 1 }} onClick={() => { setWithdrawingInvestorId(null); setWithdrawAmountInput(''); }} disabled={loading}>Batal</button>
+              </div>
+            </form>
           </div>
         )}
 

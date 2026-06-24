@@ -43,6 +43,14 @@ if (process.env.VERCEL && !fs.existsSync(POOL_FILE_PATH)) {
   }
 }
 
+// Helper to hash current investors state to prevent race conditions
+function getInvestorsHash(investors) {
+  if (!Array.isArray(investors)) return '';
+  // Sort by id to ensure deterministic order, then stringify and hash
+  const sorted = [...investors].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  return crypto.createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
+}
+
 // Helper to get pool data from Supabase with fallback to local file
 async function getPoolData() {
   if (supabase) {
@@ -128,7 +136,7 @@ app.use(cors({
       try {
         const hostname = new URL(origin).hostname;
         if (hostname.includes('invest-monitor') || hostname.includes('despectus-capital')) return callback(null, true);
-      } catch (err) {
+      } catch {
         // URL parsing error, ignore
       }
     }
@@ -136,7 +144,7 @@ app.use(cors({
     callback(new Error('Origin not allowed by CORS policy.'));
   },
   methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
 app.use(express.json({ limit: '10kb' }));
@@ -276,7 +284,11 @@ app.get('/api/bybit/config', (req, res) => {
 });
 
 // Admin authentication details
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Agusgnyag@cor123';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+if (!ADMIN_PASSWORD) {
+  console.error('FATAL: Environment variable ADMIN_PASSWORD is required to run the server.');
+  process.exit(1);
+}
 const ADMIN_TOKEN = crypto.createHash('sha256').update(ADMIN_PASSWORD).digest('hex');
 
 // Route to handle admin login
@@ -301,7 +313,12 @@ function authenticateAdmin(req, res, next) {
 app.get('/api/pool', async (req, res) => {
   try {
     const pool = await getPoolData();
-    res.json({ success: true, pool, isDbConnected: !!supabase });
+    res.json({ 
+      success: true, 
+      pool, 
+      isDbConnected: !!supabase,
+      hash: getInvestorsHash(pool.investors)
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -310,17 +327,29 @@ app.get('/api/pool', async (req, res) => {
 // Route to update investors list (requires auth)
 app.post('/api/pool/investors', authenticateAdmin, async (req, res) => {
   try {
-    const { investors, startBalanceIdr } = req.body;
+    const { investors, startBalanceIdr, expectedHash } = req.body;
     if (!Array.isArray(investors)) {
       return res.status(400).json({ success: false, error: 'Format data tidak valid.' });
     }
     const pool = await getPoolData();
+
+    // Concurrency check using investors hash
+    if (expectedHash) {
+      const currentHash = getInvestorsHash(pool.investors);
+      if (currentHash !== expectedHash) {
+        return res.status(409).json({ 
+          success: false, 
+          error: 'Konflik data: Investor telah diubah oleh administrator lain. Halaman Anda akan dimuat ulang.' 
+        });
+      }
+    }
+
     pool.investors = investors;
     if (startBalanceIdr !== undefined) {
       pool.startBalanceIdr = parseFloat(startBalanceIdr);
     }
     await savePoolData(pool);
-    res.json({ success: true, pool });
+    res.json({ success: true, pool, hash: getInvestorsHash(pool.investors) });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -359,11 +388,29 @@ app.post('/api/pool/start', authenticateAdmin, async (req, res) => {
 // Route to reset the cycle (requires auth)
 app.post('/api/pool/reset', authenticateAdmin, async (req, res) => {
   try {
-    const { updatedInvestors, currentBalanceIdr } = req.body;
+    const { updatedInvestors, currentBalanceIdr, expectedHash } = req.body;
     if (!Array.isArray(updatedInvestors)) {
       return res.status(400).json({ success: false, error: 'Data investor tidak valid.' });
     }
     const pool = await getPoolData();
+
+    // Check if any investor in the current pool has pending withdrawals
+    const hasPending = pool.investors.some(inv => Array.isArray(inv.pendingWithdrawals) && inv.pendingWithdrawals.length > 0);
+    if (hasPending) {
+      return res.status(400).json({ success: false, error: 'Tidak dapat mereset siklus karena masih ada pending withdrawal.' });
+    }
+
+    // Concurrency check using investors hash
+    if (expectedHash) {
+      const currentHash = getInvestorsHash(pool.investors);
+      if (currentHash !== expectedHash) {
+        return res.status(409).json({ 
+          success: false, 
+          error: 'Konflik data: Investor telah diubah oleh administrator lain. Halaman Anda akan dimuat ulang.' 
+        });
+      }
+    }
+
     pool.isStarted = false;
     pool.investors = updatedInvestors;
     pool.cycleStartTime = null;
@@ -381,14 +428,14 @@ app.post('/api/pool/reset', authenticateAdmin, async (req, res) => {
     }
     
     await savePoolData(pool);
-    res.json({ success: true, pool });
+    res.json({ success: true, pool, hash: getInvestorsHash(pool.investors) });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
 // Route to save historical balance snapshot
-app.post('/api/pool/history', async (req, res) => {
+app.post('/api/pool/history', authenticateAdmin, async (req, res) => {
   try {
     const { date, balance } = req.body;
     if (!date || balance === undefined || isNaN(balance)) {
@@ -405,7 +452,7 @@ app.post('/api/pool/history', async (req, res) => {
     }
     
     await savePoolData(pool);
-    res.json({ success: true, pool });
+    res.json({ success: true, pool, hash: getInvestorsHash(pool.investors) });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
