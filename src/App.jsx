@@ -55,6 +55,7 @@ export default function App() {
   // Modals
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isManageInvestorsOpen, setIsManageInvestorsOpen] = useState(false);
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [editingInvestorId, setEditingInvestorId] = useState(null);
   const [withdrawingInvestorId, setWithdrawingInvestorId] = useState(null);
   const [withdrawAmountInput, setWithdrawAmountInput] = useState('');
@@ -1491,6 +1492,84 @@ export default function App() {
                     Reset Cycle
                   </button>
                 </div>
+              </section>
+            )}
+
+            {/* Guide Book (Admin-only) */}
+            {isAdmin && (
+              <section className="obsidian-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <button
+                  type="button"
+                  onClick={() => setIsGuideOpen(!isGuideOpen)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--color-lime)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    width: '100%',
+                    padding: '0.2rem 0',
+                    fontWeight: 700,
+                    fontSize: '0.85rem',
+                    textAlign: 'left'
+                  }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    📖 Admin Guide Book & SOP
+                  </span>
+                  <span>{isGuideOpen ? '▲' : '▼'}</span>
+                </button>
+                
+                {isGuideOpen && (
+                  <div style={{
+                    fontSize: '0.72rem',
+                    color: 'var(--text-secondary)',
+                    lineHeight: '1.45',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.85rem',
+                    marginTop: '0.5rem',
+                    borderTop: '1px solid rgba(255,255,255,0.05)',
+                    paddingTop: '0.75rem'
+                  }}>
+                    <div>
+                      <h4 style={{ color: '#fff', fontSize: '0.76rem', marginBottom: '0.25rem', fontWeight: 700 }}>
+                        📥 1. Tambah Investor & Top-Up (Tengah Siklus)
+                      </h4>
+                      <ol style={{ paddingLeft: '1rem', margin: 0 }}>
+                        <li>Lakukan deposit uang fisik ke akun Bybit (atau update saldo manual).</li>
+                        <li>Tunggu sampai saldo Bybit bertambah di dashboard.</li>
+                        <li>Buka <strong>Manage Investors</strong> dan isi nominal dana fisik asli yang masuk.</li>
+                        <li>Pastikan opsi <strong>"Sesuaikan Modal Otomatis"</strong> dicentang agar ROI tidak terganggu.</li>
+                        <li>Sistem akan mencatat deposit virtual yang disesuaikan (lebih kecil saat profit, lebih besar saat rugi) agar adil bagi investor lama, sementara nilai bersih awal investor baru tetap pas sesuai dana fisiknya.</li>
+                      </ol>
+                    </div>
+
+                    <div>
+                      <h4 style={{ color: '#fff', fontSize: '0.76rem', marginBottom: '0.25rem', fontWeight: 700 }}>
+                        📤 2. Penarikan Dana Sebagian / Seluruh (Withdrawal)
+                      </h4>
+                      <ol style={{ paddingLeft: '1rem', margin: 0 }}>
+                        <li>Buka <strong>Manage Investors</strong> &rarr; klik <strong>Tarik</strong> pada nama investor &rarr; masukkan jumlah bersih &rarr; klik <strong>Proses</strong>. Status berubah jadi <code>Pending WD</code>.</li>
+                        <li>Tarik/transfer uang fisik senilai nominal bersih tersebut secara manual dari Bybit ke rekening investor.</li>
+                        <li>Setelah transfer fisik sukses, buka <strong>Cycle Control Center</strong> &rarr; klik <strong>"Konfirmasi Transfer"</strong> pada antrean pending. Sistem akan memotong modal pokok secara permanen.</li>
+                      </ol>
+                    </div>
+
+                    <div>
+                      <h4 style={{ color: '#fff', fontSize: '0.76rem', marginBottom: '0.25rem', fontWeight: 700 }}>
+                        🔄 3. Mengakhiri & Gulung Siklus (Reset Cycle)
+                      </h4>
+                      <ol style={{ paddingLeft: '1rem', margin: 0 }}>
+                        <li>Pastikan antrean <code>Pending WD</code> kosong (konfirmasi/batalkan semuanya).</li>
+                        <li>Pada <strong>Cycle Control Center</strong>, klik <strong>Reset Cycle</strong>.</li>
+                        <li>Sistem akan menghentikan siklus berjalan, menghitung bagi hasil bersih, dan menggulung Nilai Bersih saat ini menjadi modal deposit baru untuk siklus berikutnya (Auto-Compounding).</li>
+                      </ol>
+                    </div>
+                  </div>
+                )}
               </section>
             )}
 
