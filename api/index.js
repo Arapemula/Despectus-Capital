@@ -253,9 +253,15 @@ app.get('/api/rates', async (req, res) => {
       });
 
       if (p2pResponse.data?.result?.items && p2pResponse.data.result.items.length > 0) {
-        const rate = parseFloat(p2pResponse.data.result.items[0].price);
-        if (rate > 10000 && rate < 25000) {
-          console.log(`Successfully fetched Bybit P2P rate: Rp ${rate}`);
+        const items = p2pResponse.data.result.items;
+        const prices = items
+          .map(item => parseFloat(item.price))
+          .filter(price => !isNaN(price) && price > 10000 && price < 25000);
+        
+        if (prices.length > 0) {
+          const sum = prices.reduce((acc, p) => acc + p, 0);
+          const rate = parseFloat((sum / prices.length).toFixed(2));
+          console.log(`Successfully fetched Bybit P2P rate (average of ${prices.length} items): Rp ${rate}`);
           return res.json({ success: true, rate, source: 'bybit_p2p' });
         }
       }
