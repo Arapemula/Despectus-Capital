@@ -270,8 +270,8 @@ app.get('/api/rates', async (req, res) => {
         
         if (prices.length > 0) {
           const sum = prices.reduce((acc, p) => acc + p, 0);
-          const rate = parseFloat((sum / prices.length).toFixed(2));
-          console.log(`Successfully fetched Bybit P2P rate from ${url}: Rp ${rate}`);
+          const rate = parseFloat((sum / prices.length - 100).toFixed(2));
+          console.log(`Successfully fetched Bybit P2P rate from ${url} (minus spread): Rp ${rate}`);
           return res.json({ success: true, rate, source: 'bybit_p2p' });
         }
       }
@@ -285,8 +285,9 @@ app.get('/api/rates', async (req, res) => {
     const binanceRes = await axios.get('https://api.binance.com/api/v3/ticker/price?symbol=USDTIDR', { timeout: 4000 });
     const priceVal = parseFloat(binanceRes.data?.price);
     if (!isNaN(priceVal) && priceVal > 10000 && priceVal < 25000) {
-      console.log(`Successfully fetched Binance USDTIDR rate: Rp ${priceVal}`);
-      return res.json({ success: true, rate: priceVal, source: 'binance_spot' });
+      const rate = priceVal - 100;
+      console.log(`Successfully fetched Binance USDTIDR rate (minus spread): Rp ${rate}`);
+      return res.json({ success: true, rate, source: 'binance_spot' });
     }
   } catch (err) {
     console.warn('Binance USDTIDR rate fetch failed:', err.message);
@@ -297,8 +298,9 @@ app.get('/api/rates', async (req, res) => {
     const cgResponse = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=idr', { timeout: 4000 });
     const rateVal = parseFloat(cgResponse.data?.tether?.idr);
     if (!isNaN(rateVal) && rateVal > 10000 && rateVal < 25000) {
-      console.log(`Successfully fetched CoinGecko Tether IDR rate: Rp ${rateVal}`);
-      return res.json({ success: true, rate: rateVal, source: 'coingecko' });
+      const rate = rateVal - 100;
+      console.log(`Successfully fetched CoinGecko Tether IDR rate (minus spread): Rp ${rate}`);
+      return res.json({ success: true, rate, source: 'cocko' });
     }
   } catch (err) {
     console.warn('CoinGecko Tether rate fetch failed:', err.message);
@@ -307,12 +309,13 @@ app.get('/api/rates', async (req, res) => {
   // 4. Try ExchangeRate API (final fallback)
   try {
     const response = await axios.get('https://open.er-api.com/v6/latest/USD', { timeout: 4000 });
-    const rate = response.data?.rates?.IDR || 16400;
-    console.log(`Using fallback ExchangeRate API rate: Rp ${rate}`);
+    const baseRate = response.data?.rates?.IDR || 16400;
+    const rate = baseRate - 100;
+    console.log(`Using fallback ExchangeRate API rate (minus spread): Rp ${rate}`);
     res.json({ success: true, rate, source: 'er-api' });
   } catch (error) {
     console.error('Error fetching fallback exchange rates:', error.message);
-    res.json({ success: false, rate: 16400, message: 'Using default fallback exchange rate', source: 'default' });
+    res.json({ success: false, rate: 16300, message: 'Using default fallback exchange rate (minus spread)', source: 'default' });
   }
 });
 
