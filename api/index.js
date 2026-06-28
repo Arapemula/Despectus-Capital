@@ -6,6 +6,8 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { createClient } from '@supabase/supabase-js';
+import https from 'https';
+
 
 dotenv.config();
 
@@ -232,12 +234,19 @@ function sanitizeError(err) {
   return 'API Exchange mengembalikan error. Coba lagi nanti.';
 }
 
-// Route to get USD to IDR conversion rate (Bybit P2P Rate first, with fallback)
+// Route to get USD to IDR conversion rate (Bybit P2P Rate first, with multiple fallbacks)
 app.get('/api/rates', async (req, res) => {
-  try {
-    // 1. Try to get USDT/IDR P2P price from Bybit P2P API
+  const agent = new https.Agent({ rejectUnauthorized: false });
+  
+  // 1. Try Bybit P2P (api2.bybit.com first, then api.bybit.com)
+  const bybitUrls = [
+    'https://api2.bybit.com/fiat/otc/item/online',
+    'https://api.bybit.com/fiat/otc/item/online'
+  ];
+
+  for (const url of bybitUrls) {
     try {
-      const p2pResponse = await axios.post('https://api2.bybit.com/fiat/otc/item/online', {
+      const p2pResponse = await axios.post(url, {
         tokenId: 'USDT',
         currencyId: 'IDR',
         side: '1', // 1 = Buy side (seller's asking price = USDT price in IDR)
@@ -249,7 +258,8 @@ app.get('/api/rates', async (req, res) => {
           'Accept': 'application/json',
           'Content-Type': 'application/json'
         },
-        timeout: 5000
+        httpsAgent: agent,
+        timeout: 4000
       });
 
       if (p2pResponse.data?.result?.items && p2pResponse.data.result.items.length > 0) {
@@ -261,17 +271,44 @@ app.get('/api/rates', async (req, res) => {
         if (prices.length > 0) {
           const sum = prices.reduce((acc, p) => acc + p, 0);
           const rate = parseFloat((sum / prices.length).toFixed(2));
-          console.log(`Successfully fetched Bybit P2P rate (average of ${prices.length} items): Rp ${rate}`);
+          console.log(`Successfully fetched Bybit P2P rate from ${url}: Rp ${rate}`);
           return res.json({ success: true, rate, source: 'bybit_p2p' });
         }
       }
-    } catch (p2pError) {
-      console.warn('Bybit P2P rate fetch failed:', p2pError.message);
+    } catch (err) {
+      console.warn(`Bybit P2P fetch failed for ${url}:`, err.message);
     }
+  }
 
-    // 2. Fallback to ExchangeRate API
-    const response = await axios.get('https://open.er-api.com/v6/latest/USD', { timeout: 5000 });
+  // 2. Try Binance Spot rate (works in Vercel/production)
+  try {
+    const binanceRes = await axios.get('https://api.binance.com/api/v3/ticker/price?symbol=USDTIDR', { timeout: 4000 });
+    const priceVal = parseFloat(binanceRes.data?.price);
+    if (!isNaN(priceVal) && priceVal > 10000 && priceVal < 25000) {
+      console.log(`Successfully fetched Binance USDTIDR rate: Rp ${priceVal}`);
+      return res.json({ success: true, rate: priceVal, source: 'binance_spot' });
+    }
+  } catch (err) {
+    console.warn('Binance USDTIDR rate fetch failed:', err.message);
+  }
+
+  // 3. Try CoinGecko Tether rate
+  try {
+    const cgResponse = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=idr', { timeout: 4000 });
+    const rateVal = parseFloat(cgResponse.data?.tether?.idr);
+    if (!isNaN(rateVal) && rateVal > 10000 && rateVal < 25000) {
+      console.log(`Successfully fetched CoinGecko Tether IDR rate: Rp ${rateVal}`);
+      return res.json({ success: true, rate: rateVal, source: 'coingecko' });
+    }
+  } catch (err) {
+    console.warn('CoinGecko Tether rate fetch failed:', err.message);
+  }
+
+  // 4. Try ExchangeRate API (final fallback)
+  try {
+    const response = await axios.get('https://open.er-api.com/v6/latest/USD', { timeout: 4000 });
     const rate = response.data?.rates?.IDR || 16400;
+    console.log(`Using fallback ExchangeRate API rate: Rp ${rate}`);
     res.json({ success: true, rate, source: 'er-api' });
   } catch (error) {
     console.error('Error fetching fallback exchange rates:', error.message);
